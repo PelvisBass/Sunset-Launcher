@@ -22,6 +22,7 @@ class DesktopTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication(["sunset-launcher-tests", "-platform", "offscreen"])
         apply_theme(cls.app)
 
+    @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
     def test_project_selection_and_installed_artwork(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)
@@ -90,6 +91,7 @@ class DesktopTests(unittest.TestCase):
             finally:
                 window.close()
 
+    @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
     def test_launch_options_are_saved_per_project(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)
@@ -146,6 +148,7 @@ class DesktopTests(unittest.TestCase):
             finally:
                 window.close()
 
+    @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
     def test_project_order_persists_and_drives_update_all(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)
