@@ -14,6 +14,7 @@ from unittest.mock import patch
 from sunset_launcher import backend
 from sunset_launcher.backend import (
     Library, OperationError, Runner, SetupRequired, expand_command, parse_launch_options, recipe_for,
+    split_windows_options,
 )
 from sunset_launcher.catalog import PROJECTS, Recipe, Step
 
@@ -54,6 +55,19 @@ class RecipeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(OperationError, "launch options"):
             parse_launch_options('--log-file "unclosed')
+
+    def test_windows_options_keep_backslashes_and_remove_quotes(self):
+        self.assertEqual(
+            split_windows_options(r"""A="x y" B='it is' --log-file C:\Games\log.txt "C:\My Games\a b" '' x"""),
+            ["A=x y", "B=it is", "--log-file", r"C:\Games\log.txt", r"C:\My Games\a b", "", "x"],
+        )
+        with patch.object(os, "name", "nt"):
+            self.assertEqual(
+                parse_launch_options("SUNSET_OPTION='two words' --fast 'quoted arg'"),
+                ({"SUNSET_OPTION": "two words"}, ["--fast", "quoted arg"]),
+            )
+            with self.assertRaisesRegex(OperationError, "launch options"):
+                parse_launch_options('--log-file "unclosed')
 
     def test_launch_arguments_go_where_each_layer_reads_them(self):
         values = {"artifact": "layer.exe", "game": "Game.exe", "venv_python": "python"}

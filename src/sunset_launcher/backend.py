@@ -81,17 +81,39 @@ def host_python() -> str | None:
 _ENV_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
 
 
+def split_windows_options(text: str) -> list[str]:
+    """Split on whitespace and remove quotes anywhere in a token, keeping backslashes for Windows paths."""
+    tokens: list[str] = []
+    current: list[str] = []
+    quote = ""
+    started = False
+    for character in text:
+        if quote:
+            if character == quote:
+                quote = ""
+            else:
+                current.append(character)
+        elif character in "\"'":
+            quote, started = character, True
+        elif character.isspace():
+            if started:
+                tokens.append("".join(current))
+                current, started = [], False
+        else:
+            current.append(character)
+            started = True
+    if quote:
+        raise ValueError("No closing quotation")
+    if started:
+        tokens.append("".join(current))
+    return tokens
+
+
 def parse_launch_options(text: str) -> tuple[dict[str, str], list[str]]:
     """Split Steam-style launch options into leading VAR=value settings and arguments."""
     try:
-        if os.name == "nt":
-            # POSIX rules would drop the backslashes in Windows paths.
-            tokens = [
-                token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'" else token
-                for token in shlex.split(text, posix=False)
-            ]
-        else:
-            tokens = shlex.split(text)
+        # POSIX escapes would drop the backslashes in Windows paths.
+        tokens = split_windows_options(text) if os.name == "nt" else shlex.split(text)
     except ValueError as error:
         raise OperationError(f"Check the launch options: {error}.") from error
     environment: dict[str, str] = {}
