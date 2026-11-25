@@ -396,6 +396,8 @@ class MainWindow(QMainWindow):
         self.thread: QThread | None = None
         self.worker: Job | None = None
         self._initial_check_pending = check_updates_on_startup
+        # Measure shader caches once the startup check, or a job that preempted it, finishes.
+        self._startup_scan_pending = check_updates_on_startup
         self._startup_check_running = False
         self._job_after_startup_check: Job | None = None
         self._close_after_startup_check = False
@@ -560,8 +562,8 @@ class MainWindow(QMainWindow):
 
         cache = QHBoxLayout()
         self.shader_cache_size = label("Shader cache", "muted", wrap=True)
-        self.measure_shaders = button("Check size", quiet=True)
-        self.measure_shaders.setToolTip("Measure generated shaders and pipeline caches for this project.")
+        self.measure_shaders = button("Refresh size", quiet=True)
+        self.measure_shaders.setToolTip("Measure generated shaders and pipeline caches for this project again.")
         self.measure_shaders.clicked.connect(lambda: self._start((self.selected,), "shader_scan"))
         self.clear_shaders = button("Clear cache…", quiet=True)
         self.clear_shaders.setToolTip("Remove generated shaders and pipeline caches for this project.")
@@ -767,10 +769,24 @@ class MainWindow(QMainWindow):
     def _check_for_updates(self):
         self._start(self._built_projects(), "check")
 
+    def _cached_projects(self) -> tuple[Project, ...]:
+        return tuple(
+            project for project in self.project_list.projects()
+            if (recipe := recipe_for(project)) is not None and recipe.shader_cache is not None
+        )
+
     @Slot()
     def _check_for_updates_on_startup(self):
-        if self.isVisible():
-            self._start(self._built_projects(), "check", startup=True)
+        if not self.isVisible():
+            return
+        if built := self._built_projects():
+            self._start(built, "check", startup=True)
+        else:
+            self._scan_shaders_on_startup()
+
+    def _scan_shaders_on_startup(self):
+        self._startup_scan_pending = False
+        self._start(self._cached_projects(), "shader_scan", startup=True)
 
     def _confirm_delete(self):
         project = self.selected
@@ -975,7 +991,9 @@ class MainWindow(QMainWindow):
                 self.shader_sizes.pop(project.key, None)
             if not shader_job and not startup:
                 self.states[project.key] = "Queued"
-        self.summary.setText("Checking for updates…" if startup else "Job queued")
+        self.summary.setText(
+            "Job queued" if not startup else "Measuring shader caches…" if shader_job else "Checking for updates…"
+        )
         self.stop.setEnabled(True)
 
         self._startup_check_running = startup
@@ -1029,6 +1047,9 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _job_finished(self):
+        # finished is emitted just before the thread exits. Let it exit before a deferred close quits the app.
+        if self.thread is not None:
+            self.thread.wait()
         self.thread = None
         self.worker = None
         self._startup_check_running = False
@@ -1042,6 +1063,10 @@ class MainWindow(QMainWindow):
         if job is not None:
             self._begin_job(job)
             return
+        if self._startup_scan_pending and self.isVisible():
+            self._scan_shaders_on_startup()
+            if self.thread is not None:
+                return
         self._refresh()
 
     def _stop(self):

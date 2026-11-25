@@ -105,7 +105,45 @@ class StartupUpdateTests(unittest.TestCase):
                 self.wait_for(lambda: build.called and window.thread is None)
                 self.assertTrue(cancelled.is_set())
                 self.assertEqual(build.call_args.args[:2], (project, False))
-                self.assertEqual(window.summary.text(), "Build finished")
+                self.assertIn("Build finished.", window.console.toPlainText())
+            finally:
+                window.close()
+
+    def test_startup_measures_shader_caches_after_the_update_check(self):
+        built = PROJECTS[0]
+        cached = [project for project in PROJECTS if (recipe := recipe_for(project)) and recipe.shader_cache]
+        if built not in cached:
+            self.skipTest("The fixture requires a supported build platform")
+        order = []
+
+        def check_project(project, runner):
+            order.append(("check", project.key))
+            return UpdateCheck("a" * 40, "Up to date")
+
+        def measure(project, runner):
+            order.append(("scan", project.key))
+            return 3 * 1024 * 1024
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(Library, "revision", side_effect=lambda item: "a" * 40 if item == built else None),
+            patch.object(Library, "check_update", side_effect=check_project),
+            patch.object(Library, "shader_usage", side_effect=measure) as usage,
+        ):
+            window = MainWindow(Path(directory), scan_runtime=False)
+            try:
+                window.show()
+                self.wait_for(lambda: usage.call_count == len(cached) and window.thread is None)
+                self.assertEqual(order[0], ("check", built.key))
+                self.assertEqual({key for action, key in order[1:]}, {project.key for project in cached})
+                self.assertIn("3", window.shader_cache_size.text())
+                self.assertTrue(window.clear_shaders.isEnabled())
+                window.measure_shaders.click()
+                self.wait_for(lambda: usage.call_count == len(cached) + 1 and window.thread is None)
+                window.hide()
+                window.show()
+                self.app.processEvents()
+                self.assertEqual(usage.call_count, len(cached) + 1)
             finally:
                 window.close()
 

@@ -27,7 +27,7 @@ class DesktopTests(unittest.TestCase):
             data = Path(directory)
             test_proton = ProtonInstall("Test Proton", data / "proton")
             with patch("sunset_launcher.ui.discover_proton", return_value=[test_proton]):
-                window = MainWindow(data)
+                window = MainWindow(data, check_updates_on_startup=False)
                 try:
                     window.show()
                     self.app.processEvents()
@@ -63,7 +63,7 @@ class DesktopTests(unittest.TestCase):
             settings.setValue("game/victory", str(executable))
             settings.sync()
 
-            window = MainWindow(data, scan_runtime=False)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual(window.game.text(), str(executable))
                 window.rows["victory"].click()
@@ -71,14 +71,14 @@ class DesktopTests(unittest.TestCase):
             finally:
                 window.close()
 
-            window = MainWindow(data, scan_runtime=False)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual(window.game.text(), str(executable))
                 window.game.clear()
             finally:
                 window.close()
 
-            window = MainWindow(data, scan_runtime=False)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual(window.game.text(), "")
                 self.assertEqual(window.settings.value("game/xcl"), str(data))
@@ -88,10 +88,10 @@ class DesktopTests(unittest.TestCase):
     def test_project_order_persists_and_drives_update_all(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)
-            window = MainWindow(data, scan_runtime=False)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             window.settings.setValue("projectOrder", ["victory", "retired", "victory", "xcl"])
             window.close()
-            window = MainWindow(data, scan_runtime=False)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual([project.key for project in window.project_list.projects()],
                                  ["victory", "xcl", "tuxbox", "hyphennn", "ztrx"])
@@ -100,7 +100,7 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(window.selected.key, "xcl")
             finally:
                 window.close()
-            window = MainWindow(data, scan_runtime=False)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 projects = window.project_list.projects()
                 self.assertEqual([project.key for project in projects], ["ztrx", "xcl", "tuxbox", "hyphennn", "victory"])
@@ -116,7 +116,7 @@ class DesktopTests(unittest.TestCase):
 
     def test_check_button_compares_built_projects_and_shows_upstream_commit(self):
         with TemporaryDirectory() as directory:
-            window = MainWindow(Path(directory), scan_runtime=False)
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
             project = window.selected
             before, after = "a" * 40, "b" * 40
             try:

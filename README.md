@@ -63,7 +63,7 @@ The tests use local Git and Proton fixtures. They cover upstream commit checks, 
 
 Select **Delete build…** to remove a project's recorded executable and any recorded companion binaries, then build it again when needed. Deletion keeps the checkout, compiler caches, manually added files, game files, saves and Proton prefixes. Builds made by earlier launcher versions record only the main executable.
 
-Select **Check size** beside **Shader cache** to measure recognized generated shaders and pipelines. **Clear cache…** asks for confirmation. The next launch may spend longer recompiling shaders. The measurement covers launcher-managed locations and TuxBox's default cache, which may be shared with standalone TuxBox. Custom prefixes and caches, old shared Windows caches, and system-wide driver caches are outside its scope.
+The launcher measures each project's **Shader cache** after the startup update check. Select **Refresh size** to measure recognized generated shaders and pipelines again. **Clear cache…** asks for confirmation. The next launch may spend longer recompiling shaders. The measurement covers launcher-managed locations and TuxBox's default cache, which may be shared with standalone TuxBox. Custom prefixes and caches, old shared Windows caches, and system-wide driver caches are outside its scope.
 
 If a project shows **Needs setup**, open **Activity** for the missing tools and **Build setup** for its requirements. Other projects in the queue continue. On Linux, the launcher also recognizes tools staged in its data folder under `build-tools/`, including Cargo and Rustup, MinGW-w64, DXC, and the cargo-xwin SDK cache.
 
