@@ -5,11 +5,10 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from contextlib import nullcontext
 from pathlib import Path
-from uuid import uuid4
 
-from PySide6.QtCore import QMimeData, QPoint, QRectF, QSettings, QThread, Qt, QUrl, QObject, Signal, Slot
+from PySide6.QtCore import QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, Qt, QUrl, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
 
 from .backend import Cancelled, Library, OperationError, Runner, SetupRequired, host_environment, recipe_for
 from .catalog import PROJECTS, Project
+from .logs import open_run_log, prune_run_logs
 from .proton import ProtonInstall, custom_proton, discover_proton, prepared_wine_prefix, proton_supported
 
 
@@ -155,7 +155,9 @@ class ProjectRow(QPushButton):
         titles.addWidget(self.runtime)
         layout.addLayout(titles, 1)
         self.status = label("", "status")
-        layout.addWidget(self.status, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.status.setWordWrap(True)
+        self.status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self.status)
         layout.addWidget(label("⠿", "dragGrip"), alignment=Qt.AlignmentFlag.AlignVCenter)
         for child in self.findChildren(QLabel):
             child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -187,13 +189,15 @@ class ProjectRow(QPushButton):
         self.drag_start = None
         super().mouseReleaseEvent(event)
 
-    def update_status(self, status: str, runtime: str):
+    def update_status(self, status: str, runtime: str, update_detail: str = ""):
         self.runtime.setText(runtime)
         self.status.setText(status)
+        self.setToolTip(f"{update_detail}\nDrag to reorder" if update_detail else "Drag to reorder")
         color = {
             "Ready": "#9ce1ce", "Failed": "#ffafa8", "Building": "#ffb895",
             "Updating": "#ffb895", "Running": "#f7a7ce", "Queued": "#dfbae9",
-            "Needs setup": "#ffcf9a",
+            "Needs setup": "#ffcf9a", "Up to date": "#9ce1ce", "Update available": "#ffcf9a",
+            "Checking": "#dfbae9", "Upstream diverged": "#ffafa8", "Check unavailable": "#ffafa8",
         }.get(status, "#bbb0c6")
         self.status.setStyleSheet(f"color: {color};")
         self.setAccessibleDescription(f"{runtime}, {status}")
@@ -264,6 +268,8 @@ class ProjectList(QWidget):
 class Job(QObject):
     line = Signal(str)
     state = Signal(str, str)
+    update_check = Signal(str, str, str)
+    shader_usage = Signal(str, object)
     complete = Signal(str)
 
     def __init__(
@@ -285,43 +291,75 @@ class Job(QObject):
         setup_needed = 0
         try:
             logs = self.library.data / "logs"
-            logs.mkdir(parents=True, exist_ok=True)
-            name = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{uuid4().hex[:6]}.log"
-            with (logs / name).open("w", encoding="utf-8", buffering=1) as log:
+            read_only = self.action in {"check", "shader_scan"}
+            shader_job = self.action in {"shader_scan", "shader_clear"}
+            with (nullcontext((None, None)) if read_only else open_run_log(logs)) as (path, log):
                 def output(message: str):
-                    log.write(message)
+                    if log is not None:
+                        log.write(message)
                     self.line.emit(message)
+
+                if path is not None:
+                    try:
+                        prune_run_logs(logs, current=path)
+                    except OSError as error:
+                        output(f"Could not remove older launcher logs: {error}\n")
 
                 self.runner.output = output
                 for project in self.projects:
                     self.runner.check_cancelled()
-                    verb = {"build": "Building", "update": "Updating", "launch": "Running", "delete": "Deleting"}[self.action]
-                    self.state.emit(project.key, verb)
+                    verb = {
+                        "build": "Building", "update": "Updating", "launch": "Running",
+                        "delete": "Deleting", "check": "Checking",
+                        "shader_scan": "Measuring shader cache", "shader_clear": "Clearing shader cache",
+                    }[self.action]
+                    if not shader_job:
+                        self.state.emit(project.key, verb)
                     output(f"\n[{project.name}] {verb}\n")
                     try:
-                        if self.action == "launch":
+                        if self.action == "check":
+                            check = self.library.check_update(project, self.runner)
+                            output(f"{check.status}. Upstream commit {check.revision}.\n")
+                        elif self.action == "launch":
                             self.library.launch(
                                 project, self.game, self.proton, self.runner, prepared_prefix=self.prepared_prefix,
                             )
                             output("Exited successfully.\n")
                         elif self.action == "delete":
                             self.library.delete_build(project, self.runner)
+                        elif self.action == "shader_scan":
+                            self.shader_usage.emit(project.key, self.library.shader_usage(project, self.runner))
+                        elif self.action == "shader_clear":
+                            self.shader_usage.emit(project.key, self.library.clear_shader_cache(project, self.runner))
                         else:
                             revision = self.library.build(project, self.action == "update", self.runner)
                             output(f"Built revision {revision}.\n")
                     except Cancelled:
-                        self.state.emit(project.key, "Stopped")
+                        if not shader_job:
+                            self.state.emit(project.key, "Stopped")
                         raise
                     except SetupRequired as error:
                         setup_needed += 1
-                        self.state.emit(project.key, "Needs setup")
+                        if self.action == "check":
+                            self.update_check.emit(project.key, "Check unavailable", str(error))
+                            self.state.emit(project.key, "Check unavailable")
+                        elif not shader_job:
+                            self.state.emit(project.key, "Needs setup")
                         output(f"Setup required: {error}\n")
                     except (OSError, OperationError, ValueError) as error:
                         failures += 1
-                        self.state.emit(project.key, "Failed")
+                        if self.action == "check":
+                            self.update_check.emit(project.key, "Check unavailable", str(error))
+                            self.state.emit(project.key, "Check unavailable")
+                        elif not shader_job:
+                            self.state.emit(project.key, "Failed")
                         output(f"Error: {error}\n")
                     else:
-                        self.state.emit(project.key, "Not built" if self.action == "delete" else "Ready")
+                        if self.action == "check":
+                            self.update_check.emit(project.key, check.status, f"Upstream commit {check.revision}")
+                            self.state.emit(project.key, check.status)
+                        elif not shader_job:
+                            self.state.emit(project.key, "Not built" if self.action == "delete" else "Ready")
                 if setup_needed or failures:
                     result = " · ".join(
                         message for count, message in (
@@ -330,7 +368,10 @@ class Job(QObject):
                         ) if count
                     )
                 else:
-                    result = {"launch": "Launch finished", "delete": "Build removed"}.get(self.action, "Build finished")
+                    result = {
+                        "launch": "Launch finished", "delete": "Build removed", "check": "Update check complete",
+                        "shader_scan": "Shader cache measured", "shader_clear": "Shader cache cleanup complete",
+                    }.get(self.action, "Build finished")
         except Cancelled as error:
             self.line.emit(f"\n{error}\n")
             result = "Stopped"
@@ -352,6 +393,8 @@ class MainWindow(QMainWindow):
         self.thread: QThread | None = None
         self.worker: Job | None = None
         self.states: dict[str, str] = {}
+        self.shader_sizes: dict[str, int] = {}
+        self.update_checks: dict[str, tuple[str, str]] = {}
         self.rows: dict[str, ProjectRow] = {}
         self.setWindowTitle("Sunset Launcher")
         self.setWindowIcon(QIcon(sun_logo()))
@@ -368,6 +411,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.pages, 1)
         self.pages.addWidget(self._library_page())
         self.pages.addWidget(self._activity_page())
+        try:
+            prune_run_logs(self.library.data / "logs")
+        except OSError as error:
+            self._write_log(f"Could not remove older launcher logs: {error}\n")
         if scan_runtime:
             self.scan_proton()
         self._select(self.selected)
@@ -417,6 +464,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(Hero())
         header = QHBoxLayout()
         header.addWidget(label("Projects", "sectionTitle"), 1)
+        self.check_updates = button("Check for updates")
+        self.check_updates.setToolTip("Compare each built project's commit with its upstream branch.")
+        self.check_updates.clicked.connect(self._check_for_updates)
+        header.addWidget(self.check_updates)
         self.update_all = button("Update && build all")
         self.update_all.setToolTip("Clone missing projects, then fetch and build each supported project.")
         self.update_all.clicked.connect(lambda: self._start(
@@ -498,6 +549,19 @@ class MainWindow(QMainWindow):
         builds.addWidget(self.delete)
         builds.addStretch()
         layout.addLayout(builds)
+
+        cache = QHBoxLayout()
+        self.shader_cache_size = label("Shader cache", "muted", wrap=True)
+        self.measure_shaders = button("Check size", quiet=True)
+        self.measure_shaders.setToolTip("Measure generated shaders and pipeline caches for this project.")
+        self.measure_shaders.clicked.connect(lambda: self._start((self.selected,), "shader_scan"))
+        self.clear_shaders = button("Clear cache…", quiet=True)
+        self.clear_shaders.setToolTip("Remove generated shaders and pipeline caches for this project.")
+        self.clear_shaders.clicked.connect(self._confirm_shader_clear)
+        cache.addWidget(self.shader_cache_size, 1)
+        cache.addWidget(self.measure_shaders)
+        cache.addWidget(self.clear_shaders)
+        layout.addLayout(cache)
         layout.addWidget(rule())
 
         game_controls = QHBoxLayout()
@@ -567,6 +631,7 @@ class MainWindow(QMainWindow):
         self.stop.setEnabled(False)
         header.addWidget(self.stop)
         logs = button("Open saved logs")
+        logs.setToolTip("Open the current and previous launcher job logs.")
         logs.clicked.connect(lambda: self._open_folder(self.library.data / "logs", create=True))
         header.addWidget(logs)
         layout.addLayout(header)
@@ -610,13 +675,16 @@ class MainWindow(QMainWindow):
         for project in PROJECTS:
             revision = self.library.revision(project)
             recipe = recipe_for(project)
+            update_status, detail = self.update_checks.get(project.key, ("Ready", ""))
             status = self.states.get(project.key) or (
-                "Unsupported" if recipe is None else "Ready" if revision else "Not built"
+                "Unsupported" if recipe is None else update_status if revision else "Not built"
             )
-            self.rows[project.key].update_status(status, self._runtime_name(project))
+            update_detail = f"Built commit {revision}\n{detail}" if revision and detail else ""
+            self.rows[project.key].update_status(status, self._runtime_name(project), update_detail)
         revision = self.library.revision(self.selected)
         self.revision.setText(f"Commit {revision[:7]}" if revision else "")
-        self.revision.setToolTip(revision or "")
+        _, detail = self.update_checks.get(self.selected.key, ("", ""))
+        self.revision.setToolTip(f"Built commit {revision}\n{detail}".rstrip() if revision else "")
         self.checkout.setEnabled(self.library.source(self.selected).is_dir())
         recipe = recipe_for(self.selected)
         supports_prepared = recipe is not None and bool(recipe.prepared_wine_env)
@@ -638,9 +706,17 @@ class MainWindow(QMainWindow):
         has_game = bool(self.game.text().strip())
         ready = self.library.revision(self.selected) is not None
         self.update_all.setEnabled(idle and any(recipe_for(project) for project in PROJECTS))
+        self.check_updates.setEnabled(idle and any(self.library.revision(project) for project in PROJECTS))
         self.build.setEnabled(idle and recipe is not None)
         self.update.setEnabled(idle and recipe is not None and self.library.source(self.selected).is_dir())
         self.delete.setEnabled(idle and recipe is not None and self.library.has_build_record(self.selected))
+        cache_supported = recipe is not None and recipe.shader_cache is not None
+        cache_size = self.shader_sizes.get(self.selected.key)
+        self.shader_cache_size.setText(
+            "Shader cache" if cache_size is None else f"Shader cache · {QLocale().formattedDataSize(cache_size, 1)}"
+        )
+        self.measure_shaders.setEnabled(idle and cache_supported)
+        self.clear_shaders.setEnabled(idle and cache_supported and bool(cache_size))
         self.game.setEnabled(recipe is not None)
         self.browse.setEnabled(recipe is not None)
         self.proton.setEnabled(self.proton.count() > 1)
@@ -665,6 +741,9 @@ class MainWindow(QMainWindow):
         self.settings.setValue("projectOrder", [project.key for project in self.project_list.projects()])
         self.settings.sync()
 
+    def _check_for_updates(self):
+        self._start(tuple(project for project in self.project_list.projects() if self.library.revision(project)), "check")
+
     def _confirm_delete(self):
         project = self.selected
         if not self.delete.isEnabled():
@@ -678,6 +757,23 @@ class MainWindow(QMainWindow):
         box.exec()
         if box.clickedButton() is delete:
             self._start((project,), "delete")
+
+    def _confirm_shader_clear(self):
+        if not self.clear_shaders.isEnabled():
+            return
+        project = self.selected
+        box = QMessageBox(QMessageBox.Icon.Warning, "Clear shader cache", f"Clear the {project.name} shader cache?", parent=self)
+        message = "The project will regenerate shaders and pipelines as needed on future runs."
+        if recipe_for(project).shader_cache == "tuxbox":
+            message += " This includes TuxBox’s default shader cache shared with standalone TuxBox launches."
+        box.setInformativeText(message)
+        clear = box.addButton("Clear cache", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        if box.clickedButton() is clear:
+            self._start((project,), "shader_clear")
 
     def _browse_game(self):
         if self.selected.game_input == "either":
@@ -807,8 +903,7 @@ class MainWindow(QMainWindow):
         box.addButton(QMessageBox.StandardButton.Close)
         box.exec()
         if box.clickedButton() is guide:
-            url = project.setup_url if sys.platform == "linux" else project.repository
-            open_url(QUrl(url))
+            open_url(QUrl(project.setup_url))
         elif recipe is not None and title_guide is not None and box.clickedButton() is title_guide:
             open_url(QUrl(recipe.launch_url))
 
@@ -832,8 +927,14 @@ class MainWindow(QMainWindow):
             except (OperationError, OSError, ValueError) as error:
                 QMessageBox.warning(self, "Game files unavailable", str(error))
                 return
+        shader_job = action in {"shader_scan", "shader_clear"}
         for project in projects:
-            self.states[project.key] = "Queued"
+            if action in {"build", "update", "delete"}:
+                self.update_checks.pop(project.key, None)
+            if shader_job or action == "launch":
+                self.shader_sizes.pop(project.key, None)
+            if not shader_job:
+                self.states[project.key] = "Queued"
         self.summary.setText("Job queued")
         self.stop.setEnabled(True)
 
@@ -843,6 +944,8 @@ class MainWindow(QMainWindow):
         self.thread.started.connect(self.worker.execute)
         self.worker.line.connect(self._write_log)
         self.worker.state.connect(self._job_state)
+        self.worker.update_check.connect(self._job_update_check)
+        self.worker.shader_usage.connect(self._job_shader_usage)
         self.worker.complete.connect(self._job_complete)
         self.worker.complete.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
@@ -864,15 +967,24 @@ class MainWindow(QMainWindow):
     @Slot(str, str)
     def _job_state(self, key: str, state: str):
         self.states[key] = state
-        if state in {"Building", "Updating", "Running", "Deleting"}:
+        if state in {"Building", "Updating", "Running", "Deleting", "Checking"}:
             name = next(project.name for project in PROJECTS if project.key == key)
             self.summary.setText(f"{state} {name}")
         self._refresh()
+
+    @Slot(str, str, str)
+    def _job_update_check(self, key: str, status: str, detail: str):
+        self.update_checks[key] = (status, detail)
 
     @Slot(str)
     def _job_complete(self, result: str):
         self.summary.setText(result)
         self._write_log(f"\n{result}.\n")
+
+    @Slot(str, object)
+    def _job_shader_usage(self, key: str, size: int):
+        self.shader_sizes[key] = size
+        self._refresh_actions()
 
     @Slot()
     def _job_finished(self):

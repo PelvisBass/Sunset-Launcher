@@ -11,7 +11,7 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sunset_launcher.__main__ import apply_theme
-from sunset_launcher.backend import recipe_for
+from sunset_launcher.backend import UpdateCheck, recipe_for
 from sunset_launcher.proton import ProtonInstall
 from sunset_launcher.ui import Hero, MainWindow
 
@@ -76,6 +76,32 @@ class DesktopTests(unittest.TestCase):
                         start.assert_called_once_with(supported, "update")
                     else:
                         start.assert_not_called()
+            finally:
+                window.close()
+
+    def test_check_button_compares_built_projects_and_shows_upstream_commit(self):
+        with TemporaryDirectory() as directory:
+            window = MainWindow(Path(directory), scan_runtime=False)
+            project = window.selected
+            before, after = "a" * 40, "b" * 40
+            try:
+                self.assertFalse(window.check_updates.isEnabled())
+                with (
+                    patch.object(window.library, "revision", side_effect=lambda item: before if item == project else None),
+                    patch.object(window.library, "check_update", return_value=UpdateCheck(after, "Update available")) as check,
+                ):
+                    window._refresh()
+                    self.assertTrue(window.check_updates.isEnabled())
+                    window.check_updates.click()
+                    self.assertFalse(window.check_updates.isEnabled())
+                    finished = QEventLoop()
+                    window.thread.finished.connect(finished.quit)
+                    QTimer.singleShot(3000, finished.quit)
+                    finished.exec()
+                    self.assertEqual(check.call_count, 1)
+                    self.assertEqual(window.rows[project.key].status.text(), "Update available")
+                    self.assertIn(after, window.revision.toolTip())
+                    self.assertEqual(window.summary.text(), "Update check complete")
             finally:
                 window.close()
 

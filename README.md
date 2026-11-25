@@ -1,6 +1,24 @@
 # Sunset Launcher
 
-A desktop launcher for building, updating and launching XCL, Victory, TuxBox, hyphennn and ZTRX. The PySide6 interface is cross-platform. The project catalog supplies build recipes for x86-64 Linux and Windows.
+Build the standalone Linux launcher with `uv run --locked --extra bundle python scripts/build_linux.py`. To run from source on Linux or Windows, use `uv run --locked sunset-launcher`.
+
+Sunset Launcher is a desktop app for building, updating and launching XCL, Victory, TuxBox, hyphennn and ZTRX. Its project catalog supports x86-64 Linux and Windows.
+
+## Build from source
+
+Install uv and run these commands from the repository root. [uv installation](https://docs.astral.sh/uv/getting-started/installation/)
+
+```sh
+uv run --locked sunset-launcher
+```
+
+On Linux, build a standalone copy with the same Python and Qt dependencies used by the release.
+
+```sh
+uv run --locked --extra bundle python scripts/build_linux.py
+```
+
+Run `dist/SunsetLauncher/SunsetLauncher` and keep the complete `dist/SunsetLauncher/` directory together. A Linux bundle built on a newer distribution can require a newer glibc. The release workflow builds on Ubuntu 22.04 for wider compatibility.
 
 ## Run the Linux download
 
@@ -8,15 +26,9 @@ Download `SunsetLauncher-linux-x86_64.tar.gz` from the GitHub release and extrac
 
 The archive contains Python and Qt. It targets x86-64 Linux desktops with glibc 2.35 or newer, the baseline for Ubuntu 22.04. Building a translation layer still requires that layer's tools. For example, the TuxBox build uses system Python 3.10+ with `venv` support. If the Qt display fails to start on a minimal installation, see the desktop libraries used in the [CI workflow](.github/workflows/ci.yml).
 
-## Run from source
+## Run with Python
 
-From this directory, run the following with [uv](https://docs.astral.sh/uv/getting-started/installation/).
-
-```sh
-uv run --locked sunset-launcher
-```
-
-You can also use Python 3.10 or newer. On Linux:
+You can also use Python 3.10 or newer. On Linux, create a virtual environment and install the launcher.
 
 ```sh
 python3 -m venv .venv
@@ -24,7 +36,7 @@ python3 -m venv .venv
 .venv/bin/sunset-launcher
 ```
 
-On Windows:
+In PowerShell on Windows, use the corresponding virtual environment paths.
 
 ```powershell
 py -m venv .venv
@@ -34,30 +46,6 @@ py -m venv .venv
 
 For Linux development with PySide6 already installed, `PYTHONPATH=src python3 -m sunset_launcher` also starts the source checkout.
 
-## Build the Linux download
-
-```sh
-uv run --locked --extra bundle python scripts/build_linux.py
-```
-
-Open `dist/SunsetLauncher/SunsetLauncher` to run it. Distribute the whole `dist/SunsetLauncher/` folder as a tar.gz to preserve executable permissions and shared-library symlinks. For broad compatibility, use the Ubuntu 22.04 build in CI. A bundle built locally can require a newer Linux userspace.
-
-## Publish on GitHub
-
-Use the **whole project root** as the repository. It is the folder containing this README and `pyproject.toml`. Keep these source paths together.
-
-| Path | Contents |
-| --- | --- |
-| `src/sunset_launcher/` | App source, style and artwork |
-| `tests/` | Offline regression tests |
-| `scripts/` and `packaging/` | Linux build entry point and dependency notices |
-| `.github/workflows/` | Source tests, bundle checks and release publishing |
-| `pyproject.toml`, `uv.lock`, `.gitignore`, `README.md` | Project metadata, pinned dependencies and instructions |
-
-Git ignores local environments, build output, and machine-specific metadata. Reviewed release downloads belong under **GitHub Releases**. Choose a repository license if you want to grant others reuse rights. The notices under `packaging/licenses/` cover bundled dependencies. [GitHub licensing guide](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository)
-
-Push the source on `main` and check **Actions**. The workflow runs source tests on Ubuntu and Windows, builds on Ubuntu 22.04, then starts the unpacked bundle in fresh Linux containers. When ready, push a version tag such as `v0.1.0`. After the checks pass, Actions creates the release with the archive and its SHA-256 checksum.
-
 ## Test locally
 
 ```sh
@@ -65,35 +53,37 @@ uv run --locked python -m unittest discover -s tests -v
 uv run --locked python -m sunset_launcher --smoke-test
 ```
 
-The tests use local Git and Proton fixtures. They cover source updates, failed builds, Proton selection, and the desktop interface. Use `QT_QPA_PLATFORM=offscreen` for the startup check on a headless Linux host.
+The tests use local Git and Proton fixtures. They cover upstream commit checks, builds, cache cleanup, log retention and the desktop interface. Use `QT_QPA_PLATFORM=offscreen` for the startup check on a headless Linux host.
 
 ## Build and launch
 
 1. Install Git, then select a project and open **Build setup** for its toolchain instructions. The launcher runs tools from your PATH. On Windows, start it from an x64 Visual Studio Native Tools prompt for TuxBox.
-2. Select **Build** to clone and compile a project. **Update & build** fetches upstream changes, fast-forwards the checkout and compiles. Hold and drag a project to change its position. The launcher remembers the order and uses it for **Update & build all**, which continues if an individual build fails. **Activity** shows live output and opens saved logs.
+2. Select **Build** to clone and compile a project. **Check for updates** compares each built project's commit with its tracked upstream branch. **Update & build** fetches upstream changes, fast-forwards the checkout and compiles. Drag projects to change the order used by **Update & build all**.
 3. Choose your own unpacked game files. On Linux, choose a **Proton version** for XCL, Victory, hyphennn or ZTRX, then select **Launch**. Use **Add Proton** to point to a custom installation's executable `proton` script. Each project remembers its own selection and uses a separate compatibility prefix.
 
 Select **Delete build…** to remove a project's recorded executable and any recorded companion binaries, then build it again when needed. Deletion keeps the checkout, compiler caches, manually added files, game files, saves and Proton prefixes. Builds made by earlier launcher versions record only the main executable.
 
+Select **Check size** beside **Shader cache** to measure recognized generated shaders and pipelines. **Clear cache…** asks for confirmation. The next launch may spend longer recompiling shaders. The measurement covers launcher-managed locations and TuxBox's default cache, which may be shared with standalone TuxBox. Custom prefixes and caches, old shared Windows caches, and system-wide driver caches are outside its scope.
+
 If a project shows **Needs setup**, open **Activity** for the missing tools and **Build setup** for its requirements. Other projects in the queue continue. On Linux, the launcher also recognizes tools staged in its data folder under `build-tools/`, including Cargo and Rustup, MinGW-w64, DXC, and the cargo-xwin SDK cache.
 
-Use **Open data folder** to find the checkouts, build artifacts, preferences and logs. **Build folder** opens the selected project's source checkout. **Open prefix** opens its compatibility data once a Proton launch has created it.
+Use **Open data folder** to find the checkouts, build artifacts, preferences and logs. **Build folder** opens the selected project's source checkout. **Open prefix** opens its compatibility data once a Proton launch has created it. **Activity** keeps the current and previous launcher job logs.
 
 ## Project and runtime details
 
 | Project | Linux | Windows |
 | --- | --- | --- |
 | [XCL](https://github.com/xcl-dev/xcl) | Rust and POSIX-thread MinGW-w64 build, then selected Proton | Rust MSVC build and native launch |
-| [Victory](https://github.com/Marvisak/VIctory) | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
-| [TuxBox](https://github.com/brcly/TuxBox) | Upstream Python build and runner, which use Proton Experimental through umu | Upstream Python build and runner |
+| Victory | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
+| [TuxBox](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md) | Upstream Python build and runner, which use Proton Experimental through umu | Upstream Python build and runner |
 | [hyphennn](https://github.com/fxceless/victory-fork) | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
 | [ZTRX](https://github.com/Zettrox/ztrx) | Rust, LLVM and cargo-xwin build, with experimental Proton launch | Rust MSVC build and native launch on supported NVIDIA hardware |
 
 - Steam's bundled tools and additional library folders are scanned along with common custom tool locations and Steam Flatpak's user data. Flatpak-only Proton extensions may need a host-accessible Proton installation.
 - For out-of-Steam Proton launches, the launcher prefers `umu-run` when installed. It can fall back to the selected Proton build's matching local Steam Linux Runtime and then to direct Proton. Install Proton through Steam or your preferred tool and use **Rescan Steam** to refresh the list. umu may fetch its runtime on first launch. [umu documentation](https://github.com/Open-Wine-Components/umu-launcher#how-do-i-use-it)
-- XCL on Linux is experimental. Stock Proton may fail before rendering. Use a separate checkout of the upstream Linux pull request for its setup scripts and prepare a dedicated Wine prefix with DXVK and patched vkd3d-proton. Place the Microsoft DXC DLLs beside XCL's executable in the launcher build folder. Select the same Proton installation you used when preparing the prefix and select that folder under **Wine prefix** in the XCL panel. The launcher will use that Proton installation's Wine with the prepared prefix. [XCL Linux instructions](https://raw.githubusercontent.com/simnJS/xcl/26fdda6/docs/linux.md), [upstream setup scripts](https://github.com/xcl-dev/xcl/pull/257/files)
-- Victory and hyphennn have experimental Linux compatibility. For some titles, upstream testers report needing a native Microsoft D3DCompiler DLL in the compatibility prefix. [Victory Linux test reports](https://github.com/Marvisak/VIctory/issues/49)
-- For a retail title on TuxBox, follow the upstream directions to stage its built providers in a working copy before launching. The upstream runner selects its own Proton on Linux. [TuxBox title setup](https://github.com/brcly/TuxBox/blob/main/docs/PROJECTSCARLETT.md#stage-a-working-copy)
+- XCL on Linux is experimental. Stock Proton may fail before rendering. If you have a dedicated Wine prefix configured with DXVK and XCL-compatible vkd3d-proton, select it under **Wine prefix** and choose the Proton version used to prepare it. Place the matching x64 `dxcompiler.dll` and `dxil.dll` from a Microsoft DXC release beside `xcl.exe` in the build folder. [Microsoft DXC releases](https://github.com/microsoft/DirectXShaderCompiler/releases)
+- Victory and hyphennn have experimental Linux compatibility. Some titles may need a native Microsoft D3DCompiler DLL in the compatibility prefix.
+- Some TuxBox titles need the built providers staged in a working copy. The upstream runner selects its own Proton on Linux. Use the upstream Lanes homebrew example to check your setup. [TuxBox Lanes example](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play)
 
 Compatibility, including whether a particular title runs, depends on the upstream project, build and hardware.
 

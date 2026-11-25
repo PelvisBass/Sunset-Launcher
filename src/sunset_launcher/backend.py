@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -13,11 +14,13 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock, Timer
 
 from .catalog import Project, Recipe
 from .proton import ProtonInstall, prepared_wine_launch, proton_game_path, proton_launch
+from .shader_cache import cache_files, configure_shader_cache, remove_cache_file
 
 
 class OperationError(RuntimeError):
@@ -30,6 +33,12 @@ class SetupRequired(OperationError):
 
 class Cancelled(OperationError):
     pass
+
+
+@dataclass(frozen=True)
+class UpdateCheck:
+    revision: str
+    status: str
 
 
 def host_environment(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -128,6 +137,7 @@ class Runner:
         *,
         env: dict[str, str] | None = None,
         capture: bool = False,
+        timeout: float | None = None,
     ) -> str:
         self.check_cancelled()
         display = subprocess.list2cmdline(command) if os.name == "nt" else shlex.join(command)
@@ -148,6 +158,20 @@ class Runner:
             self._process = process
             if self.stopped.is_set():
                 self._stop(process)
+        timed_out = False
+
+        def expire() -> None:
+            nonlocal timed_out
+            with self._lock:
+                if self._process is process:
+                    timed_out = True
+                    self._stop(process)
+
+        timeout_timer = None
+        if timeout is not None:
+            timeout_timer = Timer(timeout, expire)
+            timeout_timer.daemon = True
+            timeout_timer.start()
         captured = []
         try:
             assert process.stdout is not None
@@ -160,10 +184,14 @@ class Runner:
         finally:
             with self._lock:
                 self._process = None
+                if timeout_timer is not None:
+                    timeout_timer.cancel()
                 if self._kill_timer is not None:
                     self._kill_timer.cancel()
                     self._kill_timer = None
         self.check_cancelled()
+        if timed_out:
+            raise OperationError(f"{Path(command[0]).name} timed out after {timeout:g} seconds.")
         if code:
             raise OperationError(f"{Path(command[0]).name} exited with code {code}. See the activity log for details.")
         return "".join(captured).strip()
@@ -274,6 +302,56 @@ class Library:
             pass
         return None
 
+    def check_update(self, project: Project, runner: Runner) -> UpdateCheck:
+        built = self.revision(project)
+        if built is None:
+            raise OperationError("Build this project before checking for updates.")
+        source = self.source(project)
+        if not (source / ".git").exists():
+            raise OperationError("The project's Git checkout could not be found.")
+        env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1"}
+        if not shutil.which("git", path=host_environment(env).get("PATH")):
+            raise SetupRequired("Install Git to check for updates.")
+
+        def git(*args: str, timeout: float | None = None) -> str:
+            return runner.run(("git", *args), source, env=env, capture=True, timeout=timeout)
+
+        origin = git("config", "--get", "remote.origin.url")
+        if not self._matches_origin(origin, project.repository):
+            raise OperationError(f"The checkout's origin differs from the catalog: {origin}")
+        try:
+            branch = git("symbolic-ref", "--quiet", "HEAD")
+        except Cancelled:
+            raise
+        except OperationError as error:
+            raise OperationError("Switch the checkout to an upstream-tracking branch and try again.") from error
+        tracking = git("for-each-ref", "--format=%(upstream:remotename)%09%(upstream:remoteref)", branch)
+        remote_name, _, ref = tracking.partition("\t")
+        if remote_name != "origin" or not ref.startswith("refs/heads/"):
+            raise OperationError("The current branch does not track a branch on origin.")
+
+        output = git("ls-remote", "--quiet", "--exit-code", "--refs", "--", "origin", ref, timeout=15)
+        revision = next((sha for sha, _, name in (line.partition("\t") for line in output.splitlines()) if name == ref), "")
+        if not re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", revision):
+            raise OperationError("Git did not report a commit for the tracked branch.")
+        if built == revision:
+            return UpdateCheck(revision, "Up to date")
+
+        # An unseen tip cannot be classified locally without fetching Git objects.
+        try:
+            git("rev-parse", "--verify", "--quiet", f"{revision}^{{commit}}")
+        except Cancelled:
+            raise
+        except OperationError:
+            return UpdateCheck(revision, "Update available")
+        ahead, behind = map(int, git("rev-list", "--left-right", "--count", f"{built}...{revision}").split())
+        status = "Upstream diverged" if ahead and behind else "Local build ahead" if ahead else "Update available"
+        return UpdateCheck(revision, status)
+
+    @staticmethod
+    def _matches_origin(origin: str, repository: str) -> bool:
+        return origin.rstrip("/").removesuffix(".git").casefold() == repository.rstrip("/").removesuffix(".git").casefold()
+
     def _values(self, project: Project, recipe: Recipe) -> dict[str, str]:
         venv = self.project_dir(project) / "venv"
         venv_python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -365,7 +443,7 @@ class Library:
 
         if update and not cloned:
             origin = git("config", "--get", "remote.origin.url", capture=True)
-            if origin.rstrip("/").removesuffix(".git").casefold() != project.repository.rstrip("/").removesuffix(".git").casefold():
+            if not self._matches_origin(origin, project.repository):
                 raise OperationError(f"The checkout's origin differs from the catalog: {origin}")
             changed = git("status", "--porcelain", "--untracked-files=no", "--ignore-submodules=untracked", capture=True)
             if changed:
@@ -419,6 +497,22 @@ class Library:
         temporary.replace(record)
         return revision
 
+    def shader_usage(self, project: Project, runner: Runner) -> int:
+        recipe = self._require_recipe(project)
+        return sum(info.st_size for _, info in cache_files(self.project_dir(project), recipe, runner.check_cancelled))
+
+    def clear_shader_cache(self, project: Project, runner: Runner) -> int:
+        recipe = self._require_recipe(project)
+        total = 0
+        removed = 0
+        for path, info in cache_files(self.project_dir(project), recipe, runner.check_cancelled):
+            runner.check_cancelled()
+            if remove_cache_file(path, info):
+                total += info.st_size
+                removed += 1
+        runner.output(f"Removed {removed:,} shader cache files ({total:,} bytes).\n")
+        return self.shader_usage(project, runner)
+
     def game_path(self, project: Project, raw: str) -> Path:
         if not raw.strip():
             raise OperationError("Choose the game files before launching.")
@@ -457,4 +551,7 @@ class Library:
             for variable, directory in recipe.launch_paths:
                 path = self.project_dir(project) / "runtime" / directory
                 env[variable] = proton_game_path(path) if recipe.runtime == "proton" else str(path)
+        if recipe.shader_cache:
+            env = os.environ.copy() if env is None else env
+            configure_shader_cache(recipe, self.project_dir(project), env)
         runner.run(command, Path(recipe.working_directory.format_map(values)), env=env)

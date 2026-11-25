@@ -160,6 +160,42 @@ class LibraryTests(unittest.TestCase):
         self.library.launch(self.project, str(self.game), None, Runner(self.output.append))
         self.assertIn(f"updated {self.game}\n", self.output)
 
+    def test_check_reports_new_upstream_commit_without_fetching_or_rebuilding(self):
+        first = self.build()
+        source = self.library.source(self.project)
+        fetch_head = source / ".git/FETCH_HEAD"
+        before_fetch_head = fetch_head.read_bytes() if fetch_head.is_file() else None
+        runner = Runner(self.output.append)
+        self.assertEqual(self.library.check_update(self.project, runner).status, "Up to date")
+
+        second = self.commit_runner("upstream update")
+        result = self.library.check_update(self.project, runner)
+        self.assertEqual(result.status, "Update available")
+        self.assertEqual(result.revision, second)
+        self.assertEqual(self.git(source, "rev-parse", "HEAD"), first)
+        self.assertEqual(self.git(source, "rev-parse", "@{upstream}"), first)
+        self.assertEqual(self.library.revision(self.project), first)
+        self.assertEqual(fetch_head.read_bytes() if fetch_head.is_file() else None, before_fetch_head)
+
+        self.build(update=True)
+        self.assertEqual(self.library.check_update(self.project, runner).status, "Up to date")
+
+    def test_check_uses_checkout_tracking_branch_and_reports_unavailable_remote(self):
+        self.build()
+        source = self.library.source(self.project)
+        self.git(self.origin, "checkout", "-qb", "next")
+        next_revision = self.commit_runner("next branch")
+        self.git(source, "fetch", "-q", "origin")
+        self.git(source, "checkout", "-qb", "local-next", "--track", "origin/next")
+        self.build()
+        runner = Runner(self.output.append)
+        self.assertEqual(self.library.check_update(self.project, runner).revision, next_revision)
+
+        self.origin.rename(self.origin.with_name("unavailable"))
+        with self.assertRaisesRegex(OperationError, "git exited"):
+            self.library.check_update(self.project, runner)
+        self.assertEqual(self.library.revision(self.project), next_revision)
+
     def test_delete_generated_files_keeps_checkout_game_and_modified_outputs(self):
         with (self.origin / "build.py").open("a", encoding="utf-8") as build:
             build.write("from pathlib import Path\n")

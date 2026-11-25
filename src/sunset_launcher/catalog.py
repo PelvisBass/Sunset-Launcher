@@ -28,6 +28,7 @@ class Recipe:
     needs_xwin_sdk: bool = False
     companion_outputs: tuple[str, ...] = ()
     launch_paths: tuple[tuple[str, str], ...] = ()
+    shader_cache: Literal["xcl", "victory", "tuxbox"] | None = None
 
 
 @dataclass(frozen=True)
@@ -71,10 +72,10 @@ XCL_RECIPES = {
             ("XCL_NETWORK", "0"),
             ("WINEDEBUG", "-all"),
         ),
-        launch_note="Stock Proton can fail before rendering. Prepare a Wine prefix with DXVK and patched "
-        "vkd3d-proton using the upstream launch guide, then select it under Wine prefix.",
-        launch_url="https://raw.githubusercontent.com/simnJS/xcl/26fdda6/docs/linux.md",
+        launch_note="Stock Proton can fail before rendering. Under Wine prefix, you can select a dedicated "
+        "prefix with DXVK and an XCL-compatible vkd3d-proton build.",
         rust_target="x86_64-pc-windows-gnu",
+        shader_cache="xcl",
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -91,6 +92,7 @@ XCL_RECIPES = {
             "Install Rust with the x64 MSVC toolchain, Visual Studio C++ Build Tools and the Windows SDK.",
             "XCL requires a D3D12 GPU with mesh shaders and Shader Model 6.6, DXC and Windows Gaming Services.",
         ),
+        shader_cache="xcl",
     ),
 }
 
@@ -117,8 +119,8 @@ VICTORY_RECIPES = {
         ),
         launch_note="Linux compatibility is experimental. Some titles may need a native Microsoft D3DCompiler DLL "
         "in the Proton prefix.",
-        launch_url="https://github.com/Marvisak/VIctory/issues/49",
         rust_target="x86_64-pc-windows-msvc",
+        shader_cache="victory",
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -132,6 +134,7 @@ VICTORY_RECIPES = {
         command=VICTORY_LAUNCH,
         runtime="native",
         requirements=("Install Rust with rustup, Visual Studio C++ Build Tools and the Windows SDK.",),
+        shader_cache="victory",
     ),
 }
 
@@ -158,8 +161,8 @@ TUXBOX_PROVIDERS = (
 )
 TUXBOX_RUST = "Install Rust 1.95 or newer and run rustup target add x86_64-pc-windows-msvc."
 TUXBOX_DXC = "Install Microsoft's dxc on PATH or set DXC to its executable."
-TUXBOX_STAGING = "Follow the upstream launch guide to stage the built providers in a working copy of your game."
-TUXBOX_LAUNCH_GUIDE = "https://github.com/brcly/TuxBox/blob/main/docs/PROJECTSCARLETT.md#stage-a-working-copy"
+TUXBOX_STAGING = "Some titles need the built providers staged in a working copy before launching."
+TUXBOX_LAUNCH_GUIDE = "https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play"
 TUXBOX_RECIPES = {
     "linux": Recipe(
         dependencies=("cargo", "clang-cl", "lld-link"),
@@ -180,6 +183,7 @@ TUXBOX_RECIPES = {
         needs_dxc=True,
         needs_xwin_sdk=True,
         companion_outputs=TUXBOX_PROVIDERS,
+        shader_cache="tuxbox",
     ),
     "windows": Recipe(
         dependencies=("cargo", "cl", "link"),
@@ -197,6 +201,7 @@ TUXBOX_RECIPES = {
         rust_target="x86_64-pc-windows-msvc",
         needs_dxc=True,
         companion_outputs=TUXBOX_PROVIDERS,
+        shader_cache="tuxbox",
     ),
 }
 
@@ -227,7 +232,7 @@ PROJECTS = (
         name="XCL",
         description="Xbox Series compatibility layer with an RDNA2 shader recompiler.",
         repository="https://github.com/xcl-dev/xcl",
-        setup_url="https://github.com/xcl-dev/xcl/pull/257",
+        setup_url="https://github.com/xcl-dev/xcl#readme",
         recipes=XCL_RECIPES,
         game_input="either",
         accent="#f792b8",
@@ -237,7 +242,7 @@ PROJECTS = (
         name="Victory",
         description="Xbox Series compatibility layer with a Direct3D 12 backend.",
         repository="https://github.com/Marvisak/VIctory",
-        setup_url="https://github.com/Marvisak/VIctory#readme",
+        setup_url="https://rustup.rs/",
         recipes=VICTORY_RECIPES,
         game_input="file",
         accent="#ffab83",
