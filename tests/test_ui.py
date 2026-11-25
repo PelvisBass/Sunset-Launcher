@@ -52,6 +52,29 @@ class DesktopTests(unittest.TestCase):
                 finally:
                     window.close()
 
+    def test_launch_options_are_saved_per_project(self):
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.rows["xcl"].click()
+                self.assertIn("XCL_NETWORK", window.launch_options.placeholderText())
+                window.launch_options.setText("XCL_NETWORK=1")
+                window.rows["tuxbox"].click()
+                self.assertEqual(window.launch_options.text(), "")
+                self.assertIn("--mangohud", window.launch_options.placeholderText())
+                window.launch_options.setText("--offline")
+                window.rows["xcl"].click()
+                self.assertEqual(window.launch_options.text(), "XCL_NETWORK=1")
+            finally:
+                window.close()
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.rows["tuxbox"].click()
+                self.assertEqual(window.launch_options.text(), "--offline")
+            finally:
+                window.close()
+
     def test_shared_game_path_migrates_an_executable_and_remembers_clear(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)

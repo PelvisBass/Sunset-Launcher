@@ -78,9 +78,38 @@ def host_python() -> str | None:
     return shutil.which("python3", path=path) or shutil.which("python", path=path)
 
 
-def expand_command(command: Sequence[str], values: dict[str, str]) -> list[str]:
+_ENV_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+
+
+def parse_launch_options(text: str) -> tuple[dict[str, str], list[str]]:
+    """Split Steam-style launch options into leading VAR=value settings and arguments."""
     try:
-        return [part.format_map(values) for part in command]
+        if os.name == "nt":
+            # POSIX rules would drop the backslashes in Windows paths.
+            tokens = [
+                token[1:-1] if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'" else token
+                for token in shlex.split(text, posix=False)
+            ]
+        else:
+            tokens = shlex.split(text)
+    except ValueError as error:
+        raise OperationError(f"Check the launch options: {error}.") from error
+    environment: dict[str, str] = {}
+    while tokens and (match := _ENV_ASSIGNMENT.fullmatch(tokens[0])):
+        environment[match[1]] = match[2]
+        tokens.pop(0)
+    return environment, tokens
+
+
+def expand_command(command: Sequence[str], values: dict[str, str], options: Sequence[str] = ()) -> list[str]:
+    try:
+        result = []
+        for part in command:
+            if part == "{options}":
+                result.extend(options)
+            else:
+                result.append(part.format_map(values))
+        return result
     except KeyError as error:
         if error.args == ("python",):
             raise SetupRequired("Install system Python 3.10 or newer with venv support for this project.") from error
@@ -528,15 +557,16 @@ class Library:
 
     def launch(
         self, project: Project, raw_game: str, proton: ProtonInstall | None,
-        runner: Runner, *, prepared_prefix: Path | None = None,
+        runner: Runner, *, prepared_prefix: Path | None = None, options: str = "",
     ) -> None:
         recipe = self._require_recipe(project)
         if self.revision(project) is None:
             raise OperationError("Build this project successfully before launching.")
         game = self.game_path(project, raw_game)
+        option_env, option_args = parse_launch_options(options)
         values = self._values(project, recipe)
         values["game"] = proton_game_path(game) if recipe.runtime == "proton" else str(game)
-        command = expand_command(recipe.command, values)
+        command = expand_command(recipe.command, values, option_args)
         env = None
         if recipe.runtime == "proton":
             if proton is None:
@@ -558,4 +588,9 @@ class Library:
         if recipe.shader_cache:
             env = os.environ.copy() if env is None else env
             configure_shader_cache(recipe, self.project_dir(project), env)
+        if option_env:
+            # The user's settings win over recipe defaults such as WINEDLLOVERRIDES.
+            env = os.environ.copy() if env is None else env
+            env.update(option_env)
+            runner.output("Launch settings: " + " ".join(f"{key}={value}" for key, value in option_env.items()) + "\n")
         runner.run(command, Path(recipe.working_directory.format_map(values)), env=env)

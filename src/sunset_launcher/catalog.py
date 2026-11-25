@@ -29,6 +29,8 @@ class Recipe:
     companion_outputs: tuple[str, ...] = ()
     launch_paths: tuple[tuple[str, str], ...] = ()
     shader_cache: Literal["xcl", "victory", "tuxbox"] | None = None
+    # Shown in the Launch options field. {options} in command marks where its arguments go.
+    options_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,10 @@ class Project:
     accent: str
 
 
-XCL_LAUNCH = ("{artifact}", "run", "{game}")
+# XCL passes everything after the game path to the game. It reads its own settings from the environment.
+XCL_LAUNCH = ("{artifact}", "run", "{game}", "{options}")
+XCL_OPTIONS = "e.g. XCL_NETWORK=1 DXVK_HUD=fps · other arguments go to the game"
+
 XCL_RECIPES = {
     "linux": Recipe(
         dependencies=("cargo",),
@@ -72,6 +77,7 @@ XCL_RECIPES = {
             ("XCL_NETWORK", "0"),
             ("WINEDEBUG", "-all"),
         ),
+        options_hint=XCL_OPTIONS,
         launch_note="Stock Proton can fail before rendering. Under Wine prefix, you can select a dedicated "
         "prefix with DXVK and an XCL-compatible vkd3d-proton build.",
         rust_target="x86_64-pc-windows-gnu",
@@ -88,6 +94,7 @@ XCL_RECIPES = {
         artifact="target/release/xcl.exe",
         command=XCL_LAUNCH,
         runtime="native",
+        options_hint=XCL_OPTIONS,
         requirements=(
             "Install Rust with the x64 MSVC toolchain, Visual Studio C++ Build Tools and the Windows SDK.",
             "XCL requires a D3D12 GPU with mesh shaders and Shader Model 6.6, DXC and Windows Gaming Services.",
@@ -97,7 +104,10 @@ XCL_RECIPES = {
 }
 
 
-VICTORY_LAUNCH = ("{artifact}", "run", "{game}", "--execute")
+# Victory accepts its flags anywhere and passes arguments after -- to the title.
+VICTORY_LAUNCH = ("{artifact}", "run", "{game}", "--execute", "{options}")
+VICTORY_OPTIONS = "e.g. --console series-s · put -- before arguments for the game"
+
 VICTORY_RECIPES = {
     "linux": Recipe(
         dependencies=("cargo", "cargo-xwin", "clang-cl", "lld-link"),
@@ -117,6 +127,7 @@ VICTORY_RECIPES = {
             "Install Rust with rustup, then install LLVM with clang-cl and lld-link.",
             "Run cargo install --locked cargo-xwin. The repository selects its own Rust toolchain and Windows target.",
         ),
+        options_hint=VICTORY_OPTIONS,
         launch_note="Linux compatibility is experimental. Some titles may need a native Microsoft D3DCompiler DLL "
         "in the Proton prefix.",
         rust_target="x86_64-pc-windows-msvc",
@@ -134,6 +145,7 @@ VICTORY_RECIPES = {
         command=VICTORY_LAUNCH,
         runtime="native",
         requirements=("Install Rust with rustup, Visual Studio C++ Build Tools and the Windows SDK.",),
+        options_hint=VICTORY_OPTIONS,
         shader_cache="victory",
     ),
 }
@@ -147,7 +159,10 @@ TUXBOX_STEPS = (
     ),
     Step(("{venv_python}", "build.py"), "Build TuxBox providers and the Lanes demo"),
 )
-TUXBOX_LAUNCH = ("{venv_python}", "tuxbox.py", "run", "{game}")
+# TuxBox passes everything after the game path to the game, so its options come first.
+TUXBOX_LAUNCH = ("{venv_python}", "tuxbox.py", "run", "{options}", "{game}")
+TUXBOX_OPTIONS = "e.g. --mangohud --offline --no-shader-prep --graphics-menu"
+
 TUXBOX_ARTIFACT = "build/lanes/lanes.exe"
 TUXBOX_PROVIDERS = (
     "build/xmem-smoke/xmem.dll", "build/xmem-smoke/tuxbox_xhttp.dll",
@@ -178,6 +193,7 @@ TUXBOX_RECIPES = {
             "For launch, install umu-run, Steam's Proton Experimental, a C compiler and Vulkan headers.",
         ),
         launch_note=f"TuxBox manages Proton on Linux. {TUXBOX_STAGING}",
+        options_hint=TUXBOX_OPTIONS,
         launch_url=TUXBOX_LAUNCH_GUIDE,
         rust_target="x86_64-pc-windows-msvc",
         needs_dxc=True,
@@ -197,6 +213,7 @@ TUXBOX_RECIPES = {
             TUXBOX_DXC,
         ),
         launch_note=TUXBOX_STAGING,
+        options_hint=TUXBOX_OPTIONS,
         launch_url=TUXBOX_LAUNCH_GUIDE,
         rust_target="x86_64-pc-windows-msvc",
         needs_dxc=True,

@@ -17,7 +17,9 @@ from PySide6.QtWidgets import (
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from .backend import Cancelled, Library, OperationError, Runner, SetupRequired, host_environment, recipe_for
+from .backend import (
+    Cancelled, Library, OperationError, Runner, SetupRequired, host_environment, parse_launch_options, recipe_for,
+)
 from .catalog import PROJECTS, Project
 from .logs import open_run_log, prune_run_logs
 from .proton import ProtonInstall, custom_proton, discover_proton, prepared_wine_prefix, proton_supported
@@ -275,7 +277,7 @@ class Job(QObject):
 
     def __init__(
         self, library: Library, projects: tuple[Project, ...], action: str,
-        game: str, proton: ProtonInstall | None, prepared_prefix: Path | None,
+        game: str, proton: ProtonInstall | None, prepared_prefix: Path | None, launch_options: str = "",
     ):
         super().__init__()
         self.library = library
@@ -284,6 +286,7 @@ class Job(QObject):
         self.game = game
         self.proton = proton
         self.prepared_prefix = prepared_prefix
+        self.launch_options = launch_options
         self.runner = Runner(self.line.emit)
 
     @Slot()
@@ -323,7 +326,8 @@ class Job(QObject):
                             output(f"{check.status}. Upstream commit {check.revision}.\n")
                         elif self.action == "launch":
                             self.library.launch(
-                                project, self.game, self.proton, self.runner, prepared_prefix=self.prepared_prefix,
+                                project, self.game, self.proton, self.runner,
+                                prepared_prefix=self.prepared_prefix, options=self.launch_options,
                             )
                             output("Exited successfully.\n")
                         elif self.action == "delete":
@@ -602,6 +606,15 @@ class MainWindow(QMainWindow):
         runtime.addLayout(links)
         layout.addWidget(self.runtime_box)
 
+        options_title = label("Launch options")
+        options_title.setProperty("fieldLabel", True)
+        layout.addWidget(options_title)
+        self.launch_options = QLineEdit()
+        self.launch_options.setClearButtonEnabled(True)
+        options_title.setBuddy(self.launch_options)
+        self.launch_options.textChanged.connect(self._save_launch_options)
+        layout.addWidget(self.launch_options)
+
         self.note = label("", "note", wrap=True)
         layout.addWidget(self.note)
         launch_row = QHBoxLayout()
@@ -660,7 +673,17 @@ class MainWindow(QMainWindow):
         self.note.setText(note)
         self.note.setVisible(bool(note))
         self._restore_proton()
+        self.launch_options.setText(self.settings.value(f"launchOptions/{project.key}", "", type=str))
+        self.launch_options.setPlaceholderText(recipe.options_hint if recipe is not None else "")
+        self.launch_options.setToolTip(
+            "Saved for this project. Leading VAR=value entries set environment variables. "
+            f"Quote values that contain spaces.\n{recipe.options_hint if recipe is not None else ''}".rstrip()
+        )
+        self.launch_options.setEnabled(recipe is not None)
         self._refresh()
+
+    def _save_launch_options(self):
+        self.settings.setValue(f"launchOptions/{self.selected.key}", self.launch_options.text().strip())
 
     def _refresh(self):
         for project in PROJECTS:
@@ -966,14 +989,21 @@ class MainWindow(QMainWindow):
         ):
             return
         self._save_game()
+        self._save_launch_options()
         game = self.game.text().strip()
+        options = self.launch_options.text().strip()
         if action == "launch":
             try:
                 self.library.game_path(projects[0], game)
             except (OperationError, OSError, ValueError) as error:
                 QMessageBox.warning(self, "Game files unavailable", str(error))
                 return
-        job = Job(self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix())
+            try:
+                parse_launch_options(options)
+            except OperationError as error:
+                QMessageBox.warning(self, "Launch options", str(error))
+                return
+        job = Job(self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix(), options)
         if self.thread is not None:
             self._job_after_startup_check = job
             self._stop()
@@ -1099,5 +1129,6 @@ class MainWindow(QMainWindow):
                 self._stop()
             return
         self._save_game()
+        self._save_launch_options()
         self.settings.sync()
         super().closeEvent(event)

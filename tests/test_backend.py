@@ -12,7 +12,9 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from sunset_launcher import backend
-from sunset_launcher.backend import Library, OperationError, Runner, SetupRequired, recipe_for
+from sunset_launcher.backend import (
+    Library, OperationError, Runner, SetupRequired, expand_command, parse_launch_options, recipe_for,
+)
 from sunset_launcher.catalog import PROJECTS, Recipe, Step
 
 
@@ -42,6 +44,33 @@ class RecipeTests(unittest.TestCase):
             self.assertTrue(all(recipe_for(project).runtime == "native" for project in PROJECTS))
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
+
+
+    def test_launch_options_split_leading_settings_from_arguments(self):
+        self.assertEqual(parse_launch_options(""), ({}, []))
+        self.assertEqual(
+            parse_launch_options('XCL_NETWORK=1 DXVK_HUD="fps,frametimes" --console series-s A=B'),
+            ({"XCL_NETWORK": "1", "DXVK_HUD": "fps,frametimes"}, ["--console", "series-s", "A=B"]),
+        )
+        with self.assertRaisesRegex(OperationError, "launch options"):
+            parse_launch_options('--log-file "unclosed')
+
+    def test_launch_arguments_go_where_each_layer_reads_them(self):
+        values = {"artifact": "layer.exe", "game": "Game.exe", "venv_python": "python"}
+        options = ["--flag", "value"]
+        expected = {
+            "xcl": ["layer.exe", "run", "Game.exe", "--flag", "value"],
+            "victory": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
+            "hyphennn": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
+            "ztrx": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
+            "tuxbox": ["python", "tuxbox.py", "run", "--flag", "value", "Game.exe"],
+        }
+        for project in PROJECTS:
+            for host, recipe in project.recipes.items():
+                with self.subTest(project=project.name, host=host):
+                    self.assertTrue(recipe.options_hint)
+                    self.assertEqual(expand_command(recipe.command, values, options), expected[project.key])
+                    self.assertNotIn("{options}", expand_command(recipe.command, values))
 
 
 class BundleHostTests(unittest.TestCase):
@@ -174,6 +203,22 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(self.library.revision(self.project), second)
         self.library.launch(self.project, str(self.game), None, Runner(self.output.append))
         self.assertIn(f"updated {self.game}\n", self.output)
+
+    def test_launch_options_reach_the_command_and_environment(self):
+        self.build()
+        recipe = next(iter(self.project.recipes.values()))
+        probe = "import os, sys; print('probe', sys.argv[1:], os.environ.get('SUNSET_OPTION'))"
+        self.project = replace(
+            self.project,
+            recipes={host: replace(recipe, command=("{python}", "-c", probe, "{options}", "{game}"))
+                     for host in self.project.recipes},
+        )
+        self.library.launch(
+            self.project, str(self.game), None, Runner(self.output.append),
+            options="SUNSET_OPTION='two words' --fast 'quoted arg'",
+        )
+        self.assertIn(f"probe {['--fast', 'quoted arg', str(self.game)]!r} two words\n", self.output)
+        self.assertIn("Launch settings: SUNSET_OPTION=two words\n", self.output)
 
     def test_check_reports_new_upstream_commit_without_fetching_or_rebuilding(self):
         first = self.build()
