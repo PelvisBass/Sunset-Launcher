@@ -517,8 +517,12 @@ class Library:
         if not raw.strip():
             raise OperationError("Choose the game files before launching.")
         game = Path(raw).expanduser().resolve()
-        if game.is_file() or (project.game_input == "either" and game.is_dir()):
+        if game.is_file():
             return game
+        if game.is_dir():
+            if project.game_input == "either":
+                return game
+            raise OperationError(f"Choose the game executable inside the shared game folder to launch {project.name}.")
         expected = "file or folder" if project.game_input == "either" else "file"
         raise OperationError(f"The selected {expected} could not be found: {game}")
 

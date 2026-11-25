@@ -6,10 +6,11 @@ import shutil
 import subprocess
 import sys
 from contextlib import nullcontext
+from os.path import expanduser, isdir, isfile
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, Qt, QUrl, QObject, Signal, Slot
-from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QTextCursor
+from PySide6.QtCore import QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, QTimer, Qt, QUrl, QObject, Signal, Slot
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
@@ -335,7 +336,7 @@ class Job(QObject):
                             revision = self.library.build(project, self.action == "update", self.runner)
                             output(f"Built revision {revision}.\n")
                     except Cancelled:
-                        if not shader_job:
+                        if not shader_job and self.action != "check":
                             self.state.emit(project.key, "Stopped")
                         raise
                     except SetupRequired as error:
@@ -360,7 +361,9 @@ class Job(QObject):
                             self.state.emit(project.key, check.status)
                         elif not shader_job:
                             self.state.emit(project.key, "Not built" if self.action == "delete" else "Ready")
-                if setup_needed or failures:
+                if self.action == "check" and (setup_needed or failures):
+                    result = f"Update check complete · {setup_needed + failures} unavailable"
+                elif setup_needed or failures:
                     result = " · ".join(
                         message for count, message in (
                             (setup_needed, f"Setup needed for {setup_needed}"),
@@ -382,7 +385,7 @@ class Job(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, data: Path, *, scan_runtime: bool = True):
+    def __init__(self, data: Path, *, scan_runtime: bool = True, check_updates_on_startup: bool = True):
         super().__init__()
         self.library = Library(data)
         self.settings = QSettings(str(data / "preferences.ini"), QSettings.Format.IniFormat)
@@ -392,6 +395,10 @@ class MainWindow(QMainWindow):
         )
         self.thread: QThread | None = None
         self.worker: Job | None = None
+        self._initial_check_pending = check_updates_on_startup
+        self._startup_check_running = False
+        self._job_after_startup_check: Job | None = None
+        self._close_after_startup_check = False
         self.states: dict[str, str] = {}
         self.shader_sizes: dict[str, int] = {}
         self.update_checks: dict[str, tuple[str, str]] = {}
@@ -462,6 +469,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 23, 24, 23)
         layout.setSpacing(13)
         layout.addWidget(Hero())
+        layout.addLayout(self._shared_game_controls())
         header = QHBoxLayout()
         header.addWidget(label("Projects", "sectionTitle"), 1)
         self.check_updates = button("Check for updates")
@@ -564,21 +572,6 @@ class MainWindow(QMainWindow):
         layout.addLayout(cache)
         layout.addWidget(rule())
 
-        game_controls = QHBoxLayout()
-        self.game_label = label("")
-        self.game_label.setProperty("fieldLabel", True)
-        layout.addWidget(self.game_label)
-        self.game = QLineEdit()
-        self.game_label.setBuddy(self.game)
-        self.game.setPlaceholderText("Choose your game files…")
-        self.game.textChanged.connect(self._refresh_actions)
-        self.game.editingFinished.connect(self._save_game)
-        game_controls.addWidget(self.game, 1)
-        self.browse = button("Browse…")
-        self.browse.clicked.connect(self._browse_game)
-        game_controls.addWidget(self.browse)
-        layout.addLayout(game_controls)
-
         self.runtime_box = QWidget()
         runtime = QVBoxLayout(self.runtime_box)
         runtime.setContentsMargins(0, 0, 0, 0)
@@ -653,15 +646,11 @@ class MainWindow(QMainWindow):
         return {"proton": "Proton", "managed": f"Managed by {project.name}", "native": "Native"}[recipe.runtime]
 
     def _select(self, project: Project):
-        if project != self.selected:
-            self._save_game()
         self.selected = project
         self.settings.setValue("project", project.key)
         self.rows[project.key].setChecked(True)
         self.project_name.setText(project.name)
         self.description.setText(project.description)
-        self.game_label.setText("Game path" if project.game_input == "either" else "Game executable")
-        self.game.setText(self.settings.value(f"game/{project.key}", "", type=str))
         recipe = recipe_for(project)
         uses_proton = recipe is not None and recipe.runtime == "proton"
         self.runtime_box.setVisible(uses_proton)
@@ -700,49 +689,88 @@ class MainWindow(QMainWindow):
     def _refresh_actions(self):
         if not hasattr(self, "launch"):
             return
-        idle = self.thread is None
+        can_start_job = self.thread is None or (
+            self._startup_check_running and self._job_after_startup_check is None and not self._close_after_startup_check
+        )
         recipe = recipe_for(self.selected)
         proton = self._chosen_proton()
         has_game = bool(self.game.text().strip())
         ready = self.library.revision(self.selected) is not None
-        self.update_all.setEnabled(idle and any(recipe_for(project) for project in PROJECTS))
-        self.check_updates.setEnabled(idle and any(self.library.revision(project) for project in PROJECTS))
-        self.build.setEnabled(idle and recipe is not None)
-        self.update.setEnabled(idle and recipe is not None and self.library.source(self.selected).is_dir())
-        self.delete.setEnabled(idle and recipe is not None and self.library.has_build_record(self.selected))
+        self.update_all.setEnabled(can_start_job and any(recipe_for(project) for project in PROJECTS))
+        self.check_updates.setEnabled(self.thread is None and bool(self._built_projects()))
+        self.build.setEnabled(can_start_job and recipe is not None)
+        self.update.setEnabled(can_start_job and recipe is not None and self.library.source(self.selected).is_dir())
+        self.delete.setEnabled(can_start_job and recipe is not None and self.library.has_build_record(self.selected))
         cache_supported = recipe is not None and recipe.shader_cache is not None
         cache_size = self.shader_sizes.get(self.selected.key)
         self.shader_cache_size.setText(
             "Shader cache" if cache_size is None else f"Shader cache · {QLocale().formattedDataSize(cache_size, 1)}"
         )
-        self.measure_shaders.setEnabled(idle and cache_supported)
-        self.clear_shaders.setEnabled(idle and cache_supported and bool(cache_size))
-        self.game.setEnabled(recipe is not None)
-        self.browse.setEnabled(recipe is not None)
+        self.measure_shaders.setEnabled(can_start_job and cache_supported)
+        self.clear_shaders.setEnabled(can_start_job and cache_supported and bool(cache_size))
         self.proton.setEnabled(self.proton.count() > 1)
-        can_launch = idle and recipe is not None and ready and has_game and (recipe.runtime != "proton" or proton is not None)
+        can_launch = can_start_job and recipe is not None and ready and has_game and (recipe.runtime != "proton" or proton is not None)
         self.launch.setEnabled(can_launch)
         if recipe is None:
             reason = "No build recipe is available for this operating system."
         elif not ready:
             reason = "Build the project before launching."
         elif not has_game:
-            reason = "Choose your game files."
+            reason = "Choose a shared game path."
         elif recipe.runtime == "proton" and proton is None:
             reason = "Select an installed Proton version."
         else:
-            reason = "Launch the selected game."
+            reason = "Launch the shared game." if self.selected.game_input == "either" else "Launch the shared game executable."
         self.launch.setToolTip(reason)
 
+    def _shared_game_controls(self) -> QHBoxLayout:
+        controls = QHBoxLayout()
+        title = label("Shared game path")
+        title.setProperty("fieldLabel", True)
+        controls.addWidget(title)
+        self.game = QLineEdit(self._saved_game_path())
+        title.setBuddy(self.game)
+        self.game.setPlaceholderText("Choose a game executable for all projects…")
+        self.game.setToolTip("All projects share this path. XCL and TuxBox can also use a game folder.")
+        self.game.textChanged.connect(self._refresh_actions)
+        self.game.editingFinished.connect(self._save_game)
+        controls.addWidget(self.game, 1)
+        self.browse = button("Browse…")
+        self.browse.clicked.connect(self._browse_game)
+        controls.addWidget(self.browse)
+        return controls
+
+    def _saved_game_path(self) -> str:
+        if self.settings.contains("gamePath"):
+            return self.settings.value("gamePath", "", type=str)
+
+        legacy_order = dict.fromkeys((self.selected.key, *(project.key for project in PROJECTS)))
+        paths = [self.settings.value(f"game/{key}", "", type=str).strip() for key in legacy_order]
+        paths = [path for path in paths if path]
+        # An executable can be reused by every project. Keep the selected project's path first among matches.
+        path = next((path for path in paths if isfile(expanduser(path))), None)
+        if path is None:
+            path = next((path for path in paths if isdir(expanduser(path))), paths[0] if paths else "")
+        self.settings.setValue("gamePath", path)
+        return path
+
     def _save_game(self):
-        self.settings.setValue(f"game/{self.selected.key}", self.game.text().strip())
+        self.settings.setValue("gamePath", self.game.text().strip())
 
     def _save_project_order(self):
         self.settings.setValue("projectOrder", [project.key for project in self.project_list.projects()])
         self.settings.sync()
 
+    def _built_projects(self) -> tuple[Project, ...]:
+        return tuple(project for project in self.project_list.projects() if self.library.revision(project))
+
     def _check_for_updates(self):
-        self._start(tuple(project for project in self.project_list.projects() if self.library.revision(project)), "check")
+        self._start(self._built_projects(), "check")
+
+    @Slot()
+    def _check_for_updates_on_startup(self):
+        if self.isVisible():
+            self._start(self._built_projects(), "check", startup=True)
 
     def _confirm_delete(self):
         project = self.selected
@@ -776,13 +804,10 @@ class MainWindow(QMainWindow):
             self._start((project,), "shader_clear")
 
     def _browse_game(self):
-        if self.selected.game_input == "either":
-            menu = QMenu(self)
-            menu.addAction("Choose a game executable…", lambda: self._pick_game(False))
-            menu.addAction("Choose a game folder…", lambda: self._pick_game(True))
-            menu.exec(self.browse.mapToGlobal(self.browse.rect().bottomLeft()))
-        else:
-            self._pick_game(False)
+        menu = QMenu(self)
+        menu.addAction("Choose a game executable…", lambda: self._pick_game(False))
+        menu.addAction("Choose a game folder…", lambda: self._pick_game(True))
+        menu.exec(self.browse.mapToGlobal(self.browse.rect().bottomLeft()))
 
     def _pick_game(self, directory: bool):
         existing = self.game.text().strip()
@@ -916,8 +941,13 @@ class MainWindow(QMainWindow):
         except OSError as error:
             QMessageBox.warning(self, "Folder unavailable", str(error))
 
-    def _start(self, projects: tuple[Project, ...], action: str):
-        if self.thread is not None or not projects:
+    def _start(self, projects: tuple[Project, ...], action: str, *, startup: bool = False):
+        if not projects:
+            return
+        if self.thread is not None and (
+            not self._startup_check_running or action == "check" or self._job_after_startup_check is not None
+            or self._close_after_startup_check
+        ):
             return
         self._save_game()
         game = self.game.text().strip()
@@ -927,19 +957,30 @@ class MainWindow(QMainWindow):
             except (OperationError, OSError, ValueError) as error:
                 QMessageBox.warning(self, "Game files unavailable", str(error))
                 return
+        job = Job(self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix())
+        if self.thread is not None:
+            self._job_after_startup_check = job
+            self._stop()
+            self._refresh_actions()
+            return
+        self._begin_job(job, startup=startup)
+
+    def _begin_job(self, job: Job, *, startup: bool = False):
+        action = job.action
         shader_job = action in {"shader_scan", "shader_clear"}
-        for project in projects:
+        for project in job.projects:
             if action in {"build", "update", "delete"}:
                 self.update_checks.pop(project.key, None)
             if shader_job or action == "launch":
                 self.shader_sizes.pop(project.key, None)
-            if not shader_job:
+            if not shader_job and not startup:
                 self.states[project.key] = "Queued"
-        self.summary.setText("Job queued")
+        self.summary.setText("Checking for updates…" if startup else "Job queued")
         self.stop.setEnabled(True)
 
+        self._startup_check_running = startup
         self.thread = QThread(self)
-        self.worker = Job(self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix())
+        self.worker = job
         self.worker.moveToThread(self.thread)
         self.thread.started.connect(self.worker.execute)
         self.worker.line.connect(self._write_log)
@@ -990,8 +1031,17 @@ class MainWindow(QMainWindow):
     def _job_finished(self):
         self.thread = None
         self.worker = None
+        self._startup_check_running = False
         self.states = {key: state for key, state in self.states.items() if state in {"Failed", "Needs setup", "Stopped"}}
         self.stop.setEnabled(False)
+        if self._close_after_startup_check:
+            self._close_after_startup_check = False
+            self.close()
+            return
+        job, self._job_after_startup_check = self._job_after_startup_check, None
+        if job is not None:
+            self._begin_job(job)
+            return
         self._refresh()
 
     def _stop(self):
@@ -1000,9 +1050,21 @@ class MainWindow(QMainWindow):
             self.summary.setText("Stopping…")
             self.worker.runner.cancel()
 
+    def showEvent(self, event: QShowEvent):
+        super().showEvent(event)
+        if self._initial_check_pending:
+            self._initial_check_pending = False
+            QTimer.singleShot(0, self, self._check_for_updates_on_startup)
+
     def closeEvent(self, event: QCloseEvent):
         if self.thread is not None:
             event.ignore()
+            if self._startup_check_running:
+                self._close_after_startup_check = True
+                self._job_after_startup_check = None
+                self._stop()
+                self._refresh_actions()
+                return
             answer = QMessageBox.question(
                 self, "Job still running", "Stop the current job? You can close the launcher once it stops.",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,

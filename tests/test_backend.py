@@ -17,6 +17,21 @@ from sunset_launcher.catalog import PROJECTS, Recipe, Step
 
 
 class RecipeTests(unittest.TestCase):
+    def test_one_executable_path_is_valid_for_every_project(self):
+        with TemporaryDirectory() as directory:
+            folder = Path(directory).resolve()
+            game = folder / "Game with spaces.exe"
+            game.touch()
+            library = Library(folder)
+            for project in PROJECTS:
+                with self.subTest(project=project.name):
+                    self.assertEqual(library.game_path(project, str(game)), game)
+                    if project.game_input == "either":
+                        self.assertEqual(library.game_path(project, str(folder)), folder)
+                    else:
+                        with self.assertRaisesRegex(OperationError, "Choose the game executable"):
+                            library.game_path(project, str(folder))
+
     def test_linux_and_windows_runtime_selection(self):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(

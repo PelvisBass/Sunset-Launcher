@@ -22,7 +22,7 @@ Run `dist/SunsetLauncher/SunsetLauncher` and keep the complete `dist/SunsetLaunc
 
 ## Run the Linux download
 
-Download `SunsetLauncher-linux-x86_64.tar.gz` from the GitHub release and extract it with your archive manager. Open the extracted **SunsetLauncher** folder and double-click the **SunsetLauncher** executable inside. Keep the whole folder together, including `_internal`. If your file manager offers **Run** or **Run as Program** in the context menu, you can use that too. An extractor that preserves Unix permissions keeps the executable ready to run.
+Download `SunsetLauncher-linux-x86_64.tar.gz` from GitHub Releases and extract it with your archive manager. Open the extracted **SunsetLauncher** folder and double-click the **SunsetLauncher** executable inside. Keep the whole folder together, including `_internal`. If your file manager offers **Run** or **Run as Program** in the context menu, you can use that too. An extractor that preserves Unix permissions keeps the executable ready to run. [GitHub Releases](https://github.com/PelvisBass/Sunset-Launcher/releases)
 
 The archive contains Python and Qt. It targets x86-64 Linux desktops with glibc 2.35 or newer, the baseline for Ubuntu 22.04. Building a translation layer still requires that layer's tools. For example, the TuxBox build uses system Python 3.10+ with `venv` support. If the Qt display fails to start on a minimal installation, see the desktop libraries used in the [CI workflow](.github/workflows/ci.yml).
 
@@ -58,8 +58,8 @@ The tests use local Git and Proton fixtures. They cover upstream commit checks, 
 ## Build and launch
 
 1. Install Git, then select a project and open **Build setup** for its toolchain instructions. The launcher runs tools from your PATH. On Windows, start it from an x64 Visual Studio Native Tools prompt for TuxBox.
-2. Select **Build** to clone and compile a project. **Check for updates** compares each built project's commit with its tracked upstream branch. **Update & build** fetches upstream changes, fast-forwards the checkout and compiles. Drag projects to change the order used by **Update & build all**.
-3. Choose your own unpacked game files. On Linux, choose a **Proton version** for XCL, Victory, hyphennn or ZTRX, then select **Launch**. Use **Add Proton** to point to a custom installation's executable `proton` script. Each project remembers its own selection and uses a separate compatibility prefix.
+2. Select **Build** to clone and compile a project. The launcher compares built commits with their upstream branches on startup. Use **Check for updates** to check again. **Update & build** fetches upstream changes, fast-forwards the checkout and compiles. Drag projects to change the order used by **Update & build all**.
+3. Set **Shared game path** once. Select an executable to use it across all projects. XCL and TuxBox also accept a folder. On Linux, choose a **Proton version** for XCL, Victory, hyphennn or ZTRX, then select **Launch**. Use **Add Proton** to point to a custom installation's executable `proton` script. Each project remembers its Proton selection and uses a separate compatibility prefix.
 
 Select **Delete build…** to remove a project's recorded executable and any recorded companion binaries, then build it again when needed. Deletion keeps the checkout, compiler caches, manually added files, game files, saves and Proton prefixes. Builds made by earlier launcher versions record only the main executable.
 

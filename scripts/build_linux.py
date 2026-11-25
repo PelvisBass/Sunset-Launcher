@@ -23,6 +23,7 @@ def write_notices(bundle: Path) -> None:
     from PySide6.QtCore import qVersion
 
     licenses = bundle / "licenses"
+    shutil.copyfile(ROOT / "LICENSE", bundle / "LICENSE")
     shutil.copytree(PACKAGING / "licenses", licenses)
     versions = {}
     for name in ("PySide6-Essentials", "shiboken6", "PyInstaller"):

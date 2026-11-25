@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QSettings, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sunset_launcher.__main__ import apply_theme
@@ -42,13 +42,48 @@ class DesktopTests(unittest.TestCase):
                     window.rows["tuxbox"].click()
                     self.assertEqual(window.selected.key, "tuxbox")
                     self.assertTrue(window.runtime_box.isHidden())
-                    self.assertEqual(window.game.text(), "")
+                    self.assertEqual(window.game.text(), game_path)
+                    game_path = str(data / "Other Game.exe")
+                    window.game.setText(game_path)
                     window.rows["xcl"].click()
                     self.assertEqual(window.game.text(), game_path)
                     if sys.platform.startswith("linux"):
                         self.assertEqual(window.proton.currentData(), test_proton)
                 finally:
                     window.close()
+
+    def test_shared_game_path_migrates_an_executable_and_remembers_clear(self):
+        with TemporaryDirectory() as directory:
+            data = Path(directory)
+            executable = data / "Game with spaces.exe"
+            executable.touch()
+            settings = QSettings(str(data / "preferences.ini"), QSettings.Format.IniFormat)
+            settings.setValue("project", "xcl")
+            settings.setValue("game/xcl", str(data))
+            settings.setValue("game/victory", str(executable))
+            settings.sync()
+
+            window = MainWindow(data, scan_runtime=False)
+            try:
+                self.assertEqual(window.game.text(), str(executable))
+                window.rows["victory"].click()
+                self.assertEqual(window.game.text(), str(executable))
+            finally:
+                window.close()
+
+            window = MainWindow(data, scan_runtime=False)
+            try:
+                self.assertEqual(window.game.text(), str(executable))
+                window.game.clear()
+            finally:
+                window.close()
+
+            window = MainWindow(data, scan_runtime=False)
+            try:
+                self.assertEqual(window.game.text(), "")
+                self.assertEqual(window.settings.value("game/xcl"), str(data))
+            finally:
+                window.close()
 
     def test_project_order_persists_and_drives_update_all(self):
         with TemporaryDirectory() as directory:
@@ -107,7 +142,7 @@ class DesktopTests(unittest.TestCase):
 
     def test_delete_requires_confirmation_and_refreshes_build_status(self):
         with TemporaryDirectory() as directory:
-            window = MainWindow(Path(directory), scan_runtime=False)
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
             project = window.selected
             recipe = recipe_for(project)
             if recipe is None:
