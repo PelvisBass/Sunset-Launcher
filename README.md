@@ -1,8 +1,8 @@
 # Sunset Launcher
 
-Build the standalone Linux launcher with `uv run --locked --extra bundle python scripts/build_linux.py`. To run from source on Linux or Windows, use `uv run --locked sunset-launcher`.
+Build the standalone launcher with `uv run --locked --extra bundle python scripts/build_bundle.py`. To run from source on Linux or Windows, use `uv run --locked sunset-launcher`.
 
-Sunset Launcher is a desktop app for building, updating and launching XCL, Victory, TuxBox, hyphennn and ZTRX. Its project catalog supports x86-64 Linux and Windows.
+Sunset Launcher is a desktop app for building, updating and launching XCL, Victory, TuxBox, hyphennn and ZTRX. Its project catalog supports x86-64 Linux and Windows. TuxBox targets Linux, so the Windows launcher lists only XCL, Victory, hyphennn and ZTRX.
 
 ## Build from source
 
@@ -12,19 +12,25 @@ Install uv and run these commands from the repository root. [uv installation](ht
 uv run --locked sunset-launcher
 ```
 
-On Linux, build a standalone copy with the same Python and Qt dependencies used by the release.
+On x86-64 Linux or Windows, build a standalone copy with the same Python and Qt dependencies used by the release.
 
 ```sh
-uv run --locked --extra bundle python scripts/build_linux.py
+uv run --locked --extra bundle python scripts/build_bundle.py
 ```
 
-Run `dist/SunsetLauncher/SunsetLauncher` and keep the complete `dist/SunsetLauncher/` directory together. A Linux bundle built on a newer distribution can require a newer glibc. The release workflow builds on Ubuntu 22.04 for wider compatibility.
+Run `dist/SunsetLauncher/SunsetLauncher` (`SunsetLauncher.exe` on Windows) and keep the complete `dist/SunsetLauncher/` directory together. A Linux bundle built on a newer distribution can require a newer glibc. The release workflow builds on Ubuntu 22.04 for wider compatibility.
 
 ## Run the Linux download
 
 Download `SunsetLauncher-linux-x86_64.tar.gz` from GitHub Releases and extract it with your archive manager. Open the extracted **SunsetLauncher** folder and double-click the **SunsetLauncher** executable inside. Keep the whole folder together, including `_internal`. If your file manager offers **Run** or **Run as Program** in the context menu, you can use that too. An extractor that preserves Unix permissions keeps the executable ready to run. [GitHub Releases](https://github.com/PelvisBass/Sunset-Launcher/releases)
 
 The archive contains Python and Qt. It targets x86-64 Linux desktops with glibc 2.35 or newer, the baseline for Ubuntu 22.04. Building a translation layer still requires that layer's tools. For example, the TuxBox build uses system Python 3.10+ with `venv` support. If the Qt display fails to start on a minimal installation, see the desktop libraries used in the [CI workflow](.github/workflows/ci.yml).
+
+## Run the Windows download
+
+Download `SunsetLauncher-windows-x86_64.zip` from GitHub Releases, extract it, and run **SunsetLauncher.exe** from the extracted **SunsetLauncher** folder. Keep the whole folder together, including `_internal`. The download is unsigned, so Windows SmartScreen may ask for confirmation the first time. Select **More info**, then **Run anyway**. Building a project still needs Git, Rust and Visual Studio C++ Build Tools. Open **Build setup** for each project's requirements. `SHA256SUMS` on the release page lists the checksums for both downloads.
+
+The launcher checks GitHub for a newer release when it starts. If one is available, a link appears at the bottom of the sidebar.
 
 ## Run with Python
 
@@ -57,7 +63,7 @@ The tests use local Git and Proton fixtures. They cover upstream commit checks, 
 
 ## Build and launch
 
-1. Install Git, then select a project and open **Build setup** for its toolchain instructions. The launcher runs tools from your PATH. On Windows, start it from an x64 Visual Studio Native Tools prompt for TuxBox.
+1. Install Git, then select a project and open **Build setup** for its toolchain instructions. The launcher runs tools from your PATH.
 2. Select **Build** to clone and compile a project. The launcher compares built commits with their upstream branches on startup. Use **Check for updates** to check again. **Update & build** fetches upstream changes, fast-forwards the checkout and compiles. Drag projects to change the order used by **Update & build all**.
 3. Set **Shared game path** once. Select an executable to use it across all projects. XCL and TuxBox also accept a folder. On Linux, choose a **Proton version** for XCL, Victory, hyphennn or ZTRX, then select **Launch**. Use **Add Proton** to point to a custom installation's executable `proton` script. Each project remembers its Proton selection and uses a separate compatibility prefix. Use **Launch options** to pass extra settings, as with Steam's launch options. Leading `VAR=value` entries set environment variables, such as `XCL_NETWORK=1` or `DXVK_HUD=fps`, and the rest go to the layer in the position it expects. XCL passes its extra arguments to the game. Victory, hyphennn and ZTRX pass arguments after `--` to the game. Each project keeps its own launch options.
 
@@ -75,7 +81,7 @@ Use **Open data folder** to find the checkouts, build artifacts, preferences and
 | --- | --- | --- |
 | [XCL](https://github.com/xcl-dev/xcl) | Rust and POSIX-thread MinGW-w64 build, then selected Proton | Rust MSVC build and native launch |
 | Victory | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
-| [TuxBox](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md) | Upstream Python build and runner, which use Proton Experimental through umu | Upstream Python build and runner |
+| [TuxBox](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md) | Upstream Python build and runner, which use Proton Experimental through umu | Not listed. Use the upstream project directly |
 | [hyphennn](https://github.com/fxceless/victory-fork) | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
 | [ZTRX](https://github.com/Zettrox/ztrx) | Rust, LLVM and cargo-xwin build, with experimental Proton launch | Rust MSVC build and native launch on supported NVIDIA hardware |
 

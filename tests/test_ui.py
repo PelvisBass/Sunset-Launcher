@@ -52,6 +52,44 @@ class DesktopTests(unittest.TestCase):
                 finally:
                     window.close()
 
+    def test_windows_hides_linux_only_projects_and_proton_controls(self):
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.show()
+                self.app.processEvents()
+                self.assertNotIn("tuxbox", window.rows)
+                self.assertEqual([project.key for project in window.project_list.projects()],
+                                 ["xcl", "victory", "hyphennn", "ztrx"])
+                for key, row in window.rows.items():
+                    row.click()
+                    self.assertTrue(window.runtime_box.isHidden(), key)
+                    self.assertEqual(row.runtime.text(), "Native")
+                    self.assertNotIn("DXVK", window.launch_options.placeholderText())
+            finally:
+                window.close()
+
+    def test_newer_launcher_release_is_offered(self):
+        from sunset_launcher import __version__
+        from sunset_launcher.ui import latest_release
+
+        major, minor, patch_level = map(int, __version__.split("."))
+        newer = f"v{major}.{minor + 1}.0"
+        listing = "\n".join(f"{'a' * 40}\trefs/tags/{tag}" for tag in (f"v{__version__}", newer, "v0.0.9", "nightly"))
+        self.assertEqual(latest_release(listing), newer)
+        self.assertIsNone(latest_release(f"{'a' * 40}\trefs/tags/v{__version__}"))
+        self.assertIsNone(latest_release(""))
+        with TemporaryDirectory() as directory:
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.show()
+                self.assertTrue(window.launcher_update.isHidden())
+                window._show_launcher_release(newer)
+                self.assertFalse(window.launcher_update.isHidden())
+                self.assertIn(newer, window.launcher_update.text())
+            finally:
+                window.close()
+
     def test_launch_options_are_saved_per_project(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)

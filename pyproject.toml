@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sunset-launcher"
-version = "0.2.1"
+version = "0.3.0"
 description = "Desktop build and launch manager for Xbox Series compatibility layers"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-bundle = ["pyinstaller>=6.16,<7; sys_platform == 'linux'"]
+bundle = ["pyinstaller>=6.16,<7; sys_platform == 'linux' or sys_platform == 'win32'"]
 
 [project.gui-scripts]
 sunset-launcher = "sunset_launcher.__main__:main"

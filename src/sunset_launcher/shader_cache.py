@@ -5,11 +5,9 @@ from __future__ import annotations
 import os
 import re
 import stat
-import sys
 from errno import ELOOP, ENOENT, ENOTDIR
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from tempfile import gettempdir
 
 from .catalog import Recipe
 from .proton import proton_game_path
@@ -96,8 +94,6 @@ def _locations(project_dir: Path, recipe: Recipe) -> Iterator[tuple[Path, re.Pat
             if _directory(prefixes):
                 for tuxbox_prefix in prefixes.iterdir():
                     yield tuxbox_prefix / WINE_LOCAL_APP_DATA / "Temp/tuxbox_shader_cache", TUXBOX_FILES
-        elif sys.platform == "win32":
-            yield Path(gettempdir()) / "tuxbox_shader_cache", TUXBOX_FILES
 
     if recipe.runtime == "proton":
         yield project_dir / "source", re.compile(r"vkd3d-proton\.cache(?:\.write)?")

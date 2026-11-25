@@ -42,10 +42,20 @@ class RecipeTests(unittest.TestCase):
                 ["proton", "proton", "managed", "proton", "proton"],
             )
         with patch.object(sys, "platform", "win32"):
-            self.assertTrue(all(recipe_for(project).runtime == "native" for project in PROJECTS))
+            self.assertEqual(
+                {project.key: recipe_for(project) and recipe_for(project).runtime for project in PROJECTS},
+                {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native", "ztrx": "native"},
+            )
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
 
+
+    def test_package_version_matches_the_project_metadata(self):
+        import re
+        from sunset_launcher import __version__
+
+        metadata = (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertEqual(re.search(r'^version = "([^"]+)"', metadata, re.MULTILINE)[1], __version__)
 
     def test_launch_options_split_leading_settings_from_arguments(self):
         self.assertEqual(parse_launch_options(""), ({}, []))

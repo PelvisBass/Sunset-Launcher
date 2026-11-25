@@ -48,6 +48,7 @@ class Project:
 # XCL passes everything after the game path to the game. It reads its own settings from the environment.
 XCL_LAUNCH = ("{artifact}", "run", "{game}", "{options}")
 XCL_OPTIONS = "e.g. XCL_NETWORK=1 DXVK_HUD=fps · other arguments go to the game"
+XCL_WINDOWS_OPTIONS = "e.g. XCL_NETWORK=1 · other arguments go to the game"
 
 XCL_RECIPES = {
     "linux": Recipe(
@@ -94,7 +95,7 @@ XCL_RECIPES = {
         artifact="target/release/xcl.exe",
         command=XCL_LAUNCH,
         runtime="native",
-        options_hint=XCL_OPTIONS,
+        options_hint=XCL_WINDOWS_OPTIONS,
         requirements=(
             "Install Rust with the x64 MSVC toolchain, Visual Studio C++ Build Tools and the Windows SDK.",
             "XCL requires a D3D12 GPU with mesh shaders and Shader Model 6.6, DXC and Windows Gaming Services.",
@@ -201,25 +202,7 @@ TUXBOX_RECIPES = {
         companion_outputs=TUXBOX_PROVIDERS,
         shader_cache="tuxbox",
     ),
-    "windows": Recipe(
-        dependencies=("cargo", "cl", "link"),
-        steps=TUXBOX_STEPS,
-        artifact=TUXBOX_ARTIFACT,
-        command=TUXBOX_LAUNCH,
-        runtime="native",
-        requirements=(
-            TUXBOX_RUST,
-            "Install Visual Studio C++ Build Tools and the Windows SDK. Open the launcher from an x64 Native Tools Command Prompt.",
-            TUXBOX_DXC,
-        ),
-        launch_note=TUXBOX_STAGING,
-        options_hint=TUXBOX_OPTIONS,
-        launch_url=TUXBOX_LAUNCH_GUIDE,
-        rust_target="x86_64-pc-windows-msvc",
-        needs_dxc=True,
-        companion_outputs=TUXBOX_PROVIDERS,
-        shader_cache="tuxbox",
-    ),
+    # TuxBox targets Linux. Windows users can run the upstream project directly.
 }
 
 

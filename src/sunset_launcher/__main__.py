@@ -13,7 +13,8 @@ from .ui import Hero, MainWindow
 
 def apply_theme(app: QApplication) -> None:
     app.setStyle("Fusion")
-    app.setFont(QFont("Sans Serif", 10))
+    # Qt can resolve the generic "Sans Serif" to the dated Microsoft Sans Serif on Windows.
+    app.setFont(QFont("Segoe UI" if sys.platform == "win32" else "Sans Serif", 10))
     palette = QPalette()
     for role, color in {
         QPalette.ColorRole.Window: "#1b1522",
@@ -56,6 +57,11 @@ def main() -> int:
     app = QApplication([argument for argument in sys.argv if argument != "--smoke-test"])
     app.setApplicationName("sunset-launcher")
     app.setApplicationDisplayName("Sunset Launcher")
+    if getattr(sys, "frozen", False) and sys.platform == "win32":
+        # The bundle's DLL directory would otherwise be inherited by Git, Cargo and games.
+        import ctypes
+
+        ctypes.windll.kernel32.SetDllDirectoryW(None)
     apply_theme(app)
     if smoke:
         return smoke_test(app)
@@ -71,7 +77,7 @@ def main() -> int:
         QMessageBox.warning(None, "Sunset Launcher", "Another copy of the launcher is using this data folder.")
         return 1
 
-    window = MainWindow(data)
+    window = MainWindow(data, check_launcher_release=True)
     window.show()
     try:
         return app.exec()

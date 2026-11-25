@@ -1,5 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import sys
 from pathlib import Path
 
 packaging = Path(SPECPATH)
@@ -7,16 +8,17 @@ source = packaging.parent / "src"
 package = source / "sunset_launcher"
 
 analysis = Analysis(
-    [str(packaging / "linux_entry.py")],
+    [str(packaging / "entry.py")],
     pathex=[str(source)],
     datas=[
         (str(package / "style.qss"), "sunset_launcher"),
         (str(package / "assets" / "harbor.jpg"), "sunset_launcher/assets"),
     ],
 )
-# Display libraries and graphics drivers must share the host C++ and X11
-# runtimes. PyInstaller keeps the embedded Python as an automatic exception.
-analysis.exclude_system_libraries()
+if sys.platform == "linux":
+    # Display libraries and graphics drivers must share the host C++ and X11
+    # runtimes. PyInstaller keeps the embedded Python as an automatic exception.
+    analysis.exclude_system_libraries()
 
 archive = PYZ(analysis.pure)
 executable = EXE(
@@ -26,7 +28,8 @@ executable = EXE(
     exclude_binaries=True,
     name="SunsetLauncher",
     upx=False,
-    console=True,
+    # A Windows GUI build would otherwise open a console window beside the launcher.
+    console=sys.platform != "win32",
 )
 bundle = COLLECT(
     executable,

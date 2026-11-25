@@ -1,4 +1,4 @@
-"""Build the click-to-run x86-64 Linux release folder."""
+"""Build the click-to-run x86-64 Linux or Windows release folder."""
 
 from __future__ import annotations
 
@@ -86,10 +86,10 @@ def main() -> int:
         help="folder in which to write SunsetLauncher (default: dist/ at the project root)",
     )
     arguments = parser.parse_args()
-    if sys.platform != "linux" or platform.machine().lower() not in {"x86_64", "amd64"}:
-        parser.error("this bundle must be built on x86-64 Linux")
+    if sys.platform not in {"linux", "win32"} or platform.machine().lower() not in {"x86_64", "amd64"}:
+        parser.error("this bundle must be built on x86-64 Linux or Windows")
     if find_spec("PyInstaller") is None:
-        parser.error("install the bundle extra with uv run --extra bundle python scripts/build_linux.py")
+        parser.error("install the bundle extra with uv run --extra bundle python scripts/build_bundle.py")
 
     output = arguments.output_dir.resolve()
     with TemporaryDirectory(prefix="sunset-pyinstaller-") as temporary:
@@ -107,7 +107,8 @@ def main() -> int:
         )
     bundle = output / APP_NAME
     write_notices(bundle)
-    print(f"Click-to-run executable: {bundle / APP_NAME}")
+    executable = bundle / (f"{APP_NAME}.exe" if sys.platform == "win32" else APP_NAME)
+    print(f"Click-to-run executable: {executable}")
     return 0
 
 

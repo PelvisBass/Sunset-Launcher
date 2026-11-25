@@ -76,7 +76,7 @@ jobs:
       - name: Build the standalone launcher
         run: |
           uv sync --locked --extra bundle
-          uv run --no-sync python scripts/build_linux.py
+          uv run --no-sync python scripts/build_bundle.py
       - name: Archive with executable permissions and symlinks
         run: |
           test -x dist/SunsetLauncher/SunsetLauncher
@@ -87,6 +87,41 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: SunsetLauncher-linux-x86_64
+          path: release/
+          if-no-files-found: error
+          compression-level: 0
+
+  bundle-windows:
+    name: Build and test Windows x86-64 bundle
+    runs-on: windows-2025
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: latest-known
+          python-version: '3.13'
+      - name: Build the standalone launcher
+        run: |
+          uv sync --locked --extra bundle
+          uv run --no-sync python scripts/build_bundle.py
+      - name: Start the bundled application
+        shell: pwsh
+        run: |
+          # The GUI build has no console, so check its exit code instead of its output.
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $app = Start-Process -FilePath dist\SunsetLauncher\SunsetLauncher.exe -ArgumentList '--smoke-test' -Wait -PassThru -NoNewWindow
+          if ($app.ExitCode -ne 0) { throw "Smoke test exited with code $($app.ExitCode)" }
+      - name: Archive the application folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory release | Out-Null
+          Compress-Archive -Path dist\SunsetLauncher -DestinationPath release\SunsetLauncher-windows-x86_64.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: SunsetLauncher-windows-x86_64
           path: release/
           if-no-files-found: error
           compression-level: 0
@@ -126,7 +161,7 @@ jobs:
   release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [test, bundle-smoke]
+    needs: [test, bundle-smoke, bundle-windows]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -136,11 +171,17 @@ jobs:
         with:
           name: SunsetLauncher-linux-x86_64
           path: release
-      - name: Publish the tested archive and checksum
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: SunsetLauncher-windows-x86_64
+          path: release
+      - name: Publish the tested archives and checksums
         working-directory: release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           sha256sum --check SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes SunsetLauncher-linux-x86_64.tar.gz SHA256SUMS
+          sha256sum SunsetLauncher-linux-x86_64.tar.gz SunsetLauncher-windows-x86_64.zip > SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            SunsetLauncher-linux-x86_64.tar.gz SunsetLauncher-windows-x86_64.zip SHA256SUMS

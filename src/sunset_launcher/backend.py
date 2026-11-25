@@ -44,7 +44,20 @@ class UpdateCheck:
 def host_environment(env: dict[str, str] | None = None) -> dict[str, str]:
     """Keep the frozen Qt and Python libraries out of external tools' environment."""
     result = dict(os.environ if env is None else env)
-    if not (getattr(sys, "frozen", False) and sys.platform == "linux"):
+    if not getattr(sys, "frozen", False):
+        return result
+    if sys.platform == "win32":
+        bundle = getattr(sys, "_MEIPASS", None)
+        if bundle:
+            for name in ("QT_PLUGIN_PATH", "QML2_IMPORT_PATH", "QML_IMPORT_PATH", "PATH"):
+                paths = result.get(name, "").split(os.pathsep)
+                external = [path for path in paths if path and not _inside(path, bundle)]
+                if external:
+                    result[name] = os.pathsep.join(external)
+                else:
+                    result.pop(name, None)
+        return result
+    if sys.platform != "linux":
         return result
     original = result.pop("LD_LIBRARY_PATH_ORIG", None)
     if original is None:
@@ -69,6 +82,13 @@ def host_environment(env: dict[str, str] | None = None) -> dict[str, str]:
             paths.append(str(directory))
     result["PATH"] = os.pathsep.join(paths)
     return result
+
+
+def _inside(path: str, folder: str) -> bool:
+    try:
+        return Path(path).resolve().is_relative_to(Path(folder).resolve())
+    except OSError:
+        return False
 
 
 def host_python() -> str | None:
@@ -486,7 +506,9 @@ class Library:
             runner.output("Cloning upstream source…\n")
             with tempfile.TemporaryDirectory(prefix=".clone-", dir=source.parent) as folder:
                 staged = Path(folder) / "source"
-                runner.run(("git", "clone", "--", project.repository, str(staged)), source.parent, env=env)
+                # Rust build trees can exceed the legacy 260-character Windows path limit.
+                long_paths = ("-c", "core.longpaths=true") if os.name == "nt" else ()
+                runner.run(("git", "clone", *long_paths, "--", project.repository, str(staged)), source.parent, env=env)
                 runner.check_cancelled()
                 staged.rename(source)
         elif not (source / ".git").exists():

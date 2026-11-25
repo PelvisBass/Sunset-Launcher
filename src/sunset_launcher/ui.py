@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import nullcontext
 from os.path import expanduser, isdir, isfile
 from pathlib import Path
@@ -17,12 +19,49 @@ from PySide6.QtWidgets import (
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from . import RELEASES_URL, __version__
 from .backend import (
     Cancelled, Library, OperationError, Runner, SetupRequired, host_environment, parse_launch_options, recipe_for,
 )
 from .catalog import PROJECTS, Project
 from .logs import open_run_log, prune_run_logs
 from .proton import ProtonInstall, custom_proton, discover_proton, prepared_wine_prefix, proton_supported
+
+
+def available_projects() -> tuple[Project, ...]:
+    """Projects with a recipe for this operating system, or every project where none has one."""
+    return tuple(project for project in PROJECTS if recipe_for(project) is not None) or PROJECTS
+
+
+def _version(tag: str) -> tuple[int, ...] | None:
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", tag)
+    return tuple(map(int, match.groups())) if match else None
+
+
+def latest_release(ls_remote_output: str) -> str | None:
+    """Return the newest vX.Y.Z tag from git ls-remote output when it is newer than this launcher."""
+    tags = [line.rpartition("refs/tags/")[2] for line in ls_remote_output.splitlines() if "refs/tags/" in line]
+    versions = [(version, tag) for tag in tags if (version := _version(tag)) is not None]
+    if not versions:
+        return None
+    version, tag = max(versions)
+    return tag if version > _version(__version__) else None
+
+
+def fetch_latest_release() -> str | None:
+    env = {**host_environment(), "GIT_TERMINAL_PROMPT": "0"}
+    git = shutil.which("git", path=env.get("PATH"))
+    if git is None:
+        return None
+    options = {"creationflags": subprocess.CREATE_NO_WINDOW} if sys.platform == "win32" else {}
+    try:
+        result = subprocess.run(
+            [git, "ls-remote", "--tags", "--refs", f"{RELEASES_URL}.git", "v*"],
+            env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=20, **options,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return latest_release(result.stdout) if result.returncode == 0 else None
 
 
 def label(value: str, style: str = "", *, wrap: bool = False) -> QLabel:
@@ -389,13 +428,16 @@ class Job(QObject):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, data: Path, *, scan_runtime: bool = True, check_updates_on_startup: bool = True):
+    def __init__(
+        self, data: Path, *, scan_runtime: bool = True, check_updates_on_startup: bool = True,
+        check_launcher_release: bool = False,
+    ):
         super().__init__()
         self.library = Library(data)
         self.settings = QSettings(str(data / "preferences.ini"), QSettings.Format.IniFormat)
         self.selected = next(
-            (project for project in PROJECTS if project.key == self.settings.value("project")),
-            PROJECTS[0],
+            (project for project in available_projects() if project.key == self.settings.value("project")),
+            available_projects()[0],
         )
         self.thread: QThread | None = None
         self.worker: Job | None = None
@@ -431,6 +473,32 @@ class MainWindow(QMainWindow):
         if scan_runtime:
             self.scan_proton()
         self._select(self.selected)
+        if check_launcher_release:
+            self._check_launcher_release()
+
+    def _check_launcher_release(self):
+        """Look for a newer launcher release without blocking the window or the job queue."""
+        found: list[str | None] = []
+        worker = threading.Thread(target=lambda: found.append(fetch_latest_release()), daemon=True)
+        poll = QTimer(self)
+        poll.setInterval(500)
+
+        def collect():
+            if worker.is_alive():
+                return
+            poll.stop()
+            poll.deleteLater()
+            if found and found[0]:
+                self._show_launcher_release(found[0])
+
+        poll.timeout.connect(collect)
+        worker.start()
+        poll.start()
+
+    def _show_launcher_release(self, tag: str):
+        self.launcher_update.setText(f"{tag} available ↗")
+        self.launcher_update.setToolTip(f"A newer launcher is out. You have v{__version__}. Open the {tag} release page.")
+        self.launcher_update.show()
 
     def _sidebar(self) -> QWidget:
         sidebar = QFrame()
@@ -446,7 +514,10 @@ class MainWindow(QMainWindow):
         branding.addWidget(mark)
         branding.addWidget(label("Sunset Launcher", "brand"), 1)
         layout.addLayout(branding)
-        layout.addSpacing(19)
+        version = label(f"v{__version__}", "muted")
+        version.setIndent(45)
+        layout.addWidget(version)
+        layout.addSpacing(12)
 
         self.nav = QButtonGroup(self)
         for index, title in enumerate(("Library", "Activity")):
@@ -459,6 +530,10 @@ class MainWindow(QMainWindow):
         self.nav.idClicked.connect(self.pages.setCurrentIndex)
 
         layout.addStretch()
+        self.launcher_update = button("", quiet=True)
+        self.launcher_update.clicked.connect(lambda: open_url(QUrl(f"{RELEASES_URL}/releases/latest")))
+        self.launcher_update.hide()
+        layout.addWidget(self.launcher_update)
         self.summary = label("Idle", "muted", wrap=True)
         self.summary.setIndent(4)
         layout.addWidget(self.summary)
@@ -494,7 +569,7 @@ class MainWindow(QMainWindow):
         grid.setSpacing(15)
         self.project_list = ProjectList()
         self.selection = QButtonGroup(self)
-        pending = {project.key: project for project in PROJECTS}
+        pending = {project.key: project for project in available_projects()}
         restored = []
         for key in self.settings.value("projectOrder", [], type=list):
             if isinstance(key, str) and key in pending:
@@ -686,7 +761,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue(f"launchOptions/{self.selected.key}", self.launch_options.text().strip())
 
     def _refresh(self):
-        for project in PROJECTS:
+        for project in self.project_list.projects():
             revision = self.library.revision(project)
             recipe = recipe_for(project)
             update_status, detail = self.update_checks.get(project.key, ("Ready", ""))
@@ -721,7 +796,7 @@ class MainWindow(QMainWindow):
         proton = self._chosen_proton()
         has_game = bool(self.game.text().strip())
         ready = self.library.revision(self.selected) is not None
-        self.update_all.setEnabled(can_start_job and any(recipe_for(project) for project in PROJECTS))
+        self.update_all.setEnabled(can_start_job and any(recipe_for(project) for project in self.project_list.projects()))
         self.check_updates.setEnabled(self.thread is None and bool(self._built_projects()))
         self.build.setEnabled(can_start_job and recipe is not None)
         self.update.setEnabled(can_start_job and recipe is not None and self.library.source(self.selected).is_dir())
