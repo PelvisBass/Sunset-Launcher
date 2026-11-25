@@ -39,12 +39,12 @@ class RecipeTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(
                 [recipe_for(project).runtime for project in PROJECTS],
-                ["proton", "proton", "managed", "proton", "proton"],
+                ["proton", "proton", "managed", "proton", "proton", "proton"],
             )
         with patch.object(sys, "platform", "win32"):
             self.assertEqual(
                 {project.key: recipe_for(project) and recipe_for(project).runtime for project in PROJECTS},
-                {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native", "ztrx": "native"},
+                {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native", "ztrx": "native", "dexnom": "native"},
             )
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
@@ -87,6 +87,7 @@ class RecipeTests(unittest.TestCase):
             "victory": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
             "hyphennn": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
             "ztrx": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
+            "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-x", "--unimplemented", "trap", "--flag", "value"],
             "tuxbox": ["python", "tuxbox.py", "run", "--flag", "value", "Game.exe"],
         }
         for project in PROJECTS:

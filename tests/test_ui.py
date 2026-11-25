@@ -61,7 +61,7 @@ class DesktopTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertNotIn("tuxbox", window.rows)
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["xcl", "victory", "hyphennn", "ztrx"])
+                                 ["xcl", "victory", "hyphennn", "ztrx", "dexnom"])
                 for key, row in window.rows.items():
                     row.click()
                     self.assertTrue(window.runtime_box.isHidden(), key)
@@ -158,16 +158,16 @@ class DesktopTests(unittest.TestCase):
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["victory", "xcl", "tuxbox", "hyphennn", "ztrx"])
+                                 ["victory", "xcl", "tuxbox", "hyphennn", "ztrx", "dexnom"])
                 window.project_list.move_row(window.rows["ztrx"], 0)
-                window.project_list.move_row(window.rows["victory"], 5)
+                window.project_list.move_row(window.rows["victory"], 6)
                 self.assertEqual(window.selected.key, "xcl")
             finally:
                 window.close()
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 projects = window.project_list.projects()
-                self.assertEqual([project.key for project in projects], ["ztrx", "xcl", "tuxbox", "hyphennn", "victory"])
+                self.assertEqual([project.key for project in projects], ["ztrx", "xcl", "tuxbox", "hyphennn", "dexnom", "victory"])
                 with patch.object(window, "_start") as start:
                     window.update_all.click()
                     supported = tuple(project for project in projects if recipe_for(project))

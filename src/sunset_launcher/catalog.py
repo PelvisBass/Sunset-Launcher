@@ -226,6 +226,33 @@ ZTRX_RECIPES = {
 }
 
 
+DEXNOM_REPOSITORY = "https://github.com/DexNom/VIctory"
+DEXNOM_RECIPES = {
+    host: replace(
+        recipe,
+        dependencies=(*recipe.dependencies, powershell),
+        steps=(
+            Step(
+                (powershell, "-NoProfile", "-NonInteractive", *policy, "-File", "Initialize-FormatTables.ps1"),
+                "Download and verify DexNom format tables",
+            ),
+            Step((*recipe.steps[0].command, "--features", "diagnostics", "--bin", "victory"), "Build DexNom Runtime"),
+        ),
+        command=("{artifact}", "run", "{game}", "--execute", "--console", "series-x", "--unimplemented", "trap", "{options}"),
+        launch_paths=ZTRX_LAUNCH_PATHS,
+        options_hint="Put -- before arguments for the game",
+        requirements=(*recipe.requirements, "Install PowerShell (pwsh) to initialize the format tables.")
+        if host == "linux" else recipe.requirements,
+        launch_note=("Proton launch is experimental. Upstream targets Windows x64."
+                     if host == "linux" else "Upstream recommends a current Direct3D 12 driver with mesh shaders and Shader Model 6.6."),
+    )
+    for host, recipe, powershell, policy in (
+        ("linux", VICTORY_RECIPES["linux"], "pwsh", ()),
+        ("windows", VICTORY_RECIPES["windows"], "powershell.exe", ("-ExecutionPolicy", "RemoteSigned")),
+    )
+}
+
+
 PROJECTS = (
     Project(
         key="xcl",
@@ -276,5 +303,15 @@ PROJECTS = (
         recipes=ZTRX_RECIPES,
         game_input="file",
         accent="#f1cd86",
+    ),
+    Project(
+        key="dexnom",
+        name="DexNom Runtime",
+        description="Victory fork focused on AMD Radeon rendering and GPU memory improvements.",
+        repository=DEXNOM_REPOSITORY,
+        setup_url=f"{DEXNOM_REPOSITORY}#run-it-on-your-pc",
+        recipes=DEXNOM_RECIPES,
+        game_input="file",
+        accent="#fa9690",
     ),
 )
