@@ -1,0 +1,117 @@
+QWidget {
+    color: #f4edf7;
+    font-size: 13px;
+}
+QMainWindow, QStackedWidget, QScrollArea, #libraryPage, #activityPage {
+    background: #15111b;
+}
+QScrollArea { border: 0; }
+#sidebar {
+    background: #1b1522;
+    border-right: 1px solid #312537;
+}
+QLabel#brand {
+    color: #fff3f9;
+    font-size: 15px;
+    font-weight: 800;
+}
+QLabel#eyebrow {
+    color: #efa8c7;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+}
+QLabel#heroTitle { font-size: 43px; font-weight: 800; color: #fff4f8; }
+QLabel#heroText { font-size: 14px; color: #f5dbe9; }
+QLabel#sectionTitle { font-size: 21px; font-weight: 750; }
+QLabel#projectTitle { font-size: 24px; font-weight: 750; }
+QLabel#rowTitle { font-size: 16px; font-weight: 700; }
+QLabel#muted, QLabel#rowDetail { color: #bdb0c6; }
+QLabel#rowDetail { font-size: 12px; }
+QLabel#status { color: #bdb0c6; font-size: 11px; font-weight: 650; }
+QLabel#note { color: #d6b8cc; font-size: 12px; }
+QLabel[fieldLabel="true"] { color: #e9dceb; font-weight: 650; }
+QFrame#detail {
+    background: #211927;
+    border: 1px solid #392c42;
+    border-radius: 15px;
+}
+QFrame[rule="true"] { background: #3b2b42; max-height: 1px; }
+QPushButton, QToolButton, QLineEdit, QComboBox {
+    border: 1px solid #4b3850;
+    border-radius: 7px;
+    padding: 7px 11px;
+    background: #2a2032;
+    min-height: 18px;
+}
+QPushButton, QToolButton { font-weight: 650; }
+QPushButton:hover, QToolButton:hover, QComboBox:hover { background: #37283e; border-color: #71516d; }
+QPushButton:focus, QToolButton:focus, QLineEdit:focus, QComboBox:focus { border-color: #f6a6cb; }
+QPushButton:disabled, QToolButton:disabled, QLineEdit:disabled, QComboBox:disabled {
+    color: #87758c;
+    background: #241c2b;
+    border-color: #3b2d43;
+}
+QPushButton#primary:enabled {
+    color: #281827;
+    border-color: #f998bc;
+    background: qlineargradient(x1:0, y1:1, x2:1, y2:0, stop:0 #f48fbd, stop:1 #ffb08f);
+}
+QPushButton#primary:hover { background: #ffb6c8; }
+QPushButton#primary:focus { border-color: #fff1f8; }
+QPushButton[quiet="true"] {
+    border: 1px solid transparent;
+    background: transparent;
+    color: #e9b5d2;
+    padding-left: 7px;
+    padding-right: 7px;
+}
+QPushButton[quiet="true"]:hover { background: #34263e; }
+QPushButton[quiet="true"]:focus { border-color: #f6a6cb; }
+QPushButton[quiet="true"]:disabled { color: #87758c; }
+QPushButton[nav="true"] {
+    text-align: left;
+    padding-left: 13px;
+    color: #d1c0d9;
+    background: transparent;
+    border: 1px solid transparent;
+    min-height: 23px;
+}
+QPushButton[nav="true"]:hover { background: #2b2033; }
+QPushButton[nav="true"]:checked { background: #35243b; color: #ffb6d2; border-color: #4e314b; }
+QPushButton[nav="true"]:focus { border-color: #f6a6cb; }
+QPushButton[projectRow="true"] {
+    background: #201925;
+    border: 1px solid #382b40;
+    border-radius: 11px;
+    padding: 0;
+    min-height: 70px;
+    max-height: 70px;
+}
+QPushButton[projectRow="true"]:hover { background: #2a2032; border-color: #765373; }
+QPushButton[projectRow="true"]:checked { background: #302137; border-color: #a86591; }
+QPushButton[projectRow="true"]:focus { border-color: #ffc0da; }
+QLabel#dragGrip { color: #a18aa9; font-size: 17px; }
+QFrame#dropMarker { background: #ffc0da; border-radius: 1px; }
+QLineEdit, QComboBox { background: #19131f; }
+QComboBox { padding-right: 22px; }
+QComboBox QAbstractItemView, QMenu {
+    background: #2b2033;
+    border: 1px solid #5a3d5b;
+    selection-background-color: #5d3b59;
+}
+QMenu::item { padding: 6px 18px; }
+QMenu::item:selected { background: #5d3b59; }
+QPlainTextEdit#log {
+    background: #17101c;
+    border: 1px solid #3e2d46;
+    border-radius: 11px;
+    padding: 8px;
+    color: #e6d4e8;
+    font-family: monospace;
+    selection-background-color: #654664;
+}
+QScrollBar:vertical { width: 10px; background: transparent; margin: 2px; }
+QScrollBar::handle:vertical { background: #624665; min-height: 30px; border-radius: 3px; }
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: transparent; }

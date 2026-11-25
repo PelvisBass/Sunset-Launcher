@@ -1,0 +1,279 @@
+"""Exercise the launcher with local Git repositories and Python build commands."""
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import unittest
+from dataclasses import replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from sunset_launcher import backend
+from sunset_launcher.backend import Library, OperationError, Runner, SetupRequired, recipe_for
+from sunset_launcher.catalog import PROJECTS, Recipe, Step
+
+
+class RecipeTests(unittest.TestCase):
+    def test_linux_and_windows_runtime_selection(self):
+        with patch.object(sys, "platform", "linux"):
+            self.assertEqual(
+                [recipe_for(project).runtime for project in PROJECTS],
+                ["proton", "proton", "managed", "proton", "proton"],
+            )
+        with patch.object(sys, "platform", "win32"):
+            self.assertTrue(all(recipe_for(project).runtime == "native" for project in PROJECTS))
+        with patch.object(sys, "platform", "darwin"):
+            self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
+
+
+class BundleHostTests(unittest.TestCase):
+    def test_frozen_launcher_uses_system_python(self):
+        available = {"python3": "/example/python3", "python": "/example/python"}
+
+        def locate(command, *, path):
+            self.assertEqual(path, "/example/host-bin")
+            return available.get(command)
+
+        with (
+            patch.object(sys, "frozen", True, create=True),
+            patch.object(backend, "host_environment", return_value={"PATH": "/example/host-bin"}),
+            patch.object(shutil, "which", side_effect=locate),
+        ):
+            self.assertEqual(backend.host_python(), available["python3"])
+            del available["python3"]
+            self.assertEqual(backend.host_python(), available["python"])
+            available.clear()
+            self.assertIsNone(backend.host_python())
+
+    def test_source_uses_its_current_python_and_environment(self):
+        environment = {"LD_LIBRARY_PATH": "/example/libraries", "QT_PLUGIN_PATH": "/example/qt"}
+        with patch.object(sys, "frozen", False, create=True):
+            self.assertEqual(backend.host_python(), sys.executable)
+            self.assertEqual(backend.host_environment(environment), environment)
+
+    def test_frozen_linux_restores_the_host_loader_and_filters_bundled_qt_paths(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            bundle = root / "bundle"
+            host_qt = root / "bundle-external" / "qt"
+            host_bin = root / "system-bin"
+            cargo_home = root / "cargo"
+            local_bin = root / ".local/bin"
+            for path in (cargo_home / "bin", local_bin):
+                path.mkdir(parents=True)
+            environment = {
+                "LD_LIBRARY_PATH": str(bundle),
+                "LD_LIBRARY_PATH_ORIG": str(root / "system-libraries"),
+                "QT_PLUGIN_PATH": os.pathsep.join((str(bundle / "plugins"), str(host_qt))),
+                "QML_IMPORT_PATH": str(bundle / "qml"),
+                "QML2_IMPORT_PATH": str(host_qt),
+                "OTHER_TOOL_SETTING": "keep",
+                "PATH": str(host_bin),
+                "CARGO_HOME": str(cargo_home),
+            }
+            with (
+                patch.object(Path, "home", return_value=root),
+                patch.object(sys, "platform", "linux"),
+                patch.object(sys, "frozen", True, create=True),
+                patch.object(sys, "_MEIPASS", str(bundle), create=True),
+            ):
+                restored = backend.host_environment(environment)
+                self.assertEqual(restored["LD_LIBRARY_PATH"], environment["LD_LIBRARY_PATH_ORIG"])
+                self.assertEqual(restored["QT_PLUGIN_PATH"], str(host_qt))
+                self.assertFalse(restored.get("QML_IMPORT_PATH"))
+                self.assertEqual(restored["QML2_IMPORT_PATH"], str(host_qt))
+                self.assertEqual(restored["OTHER_TOOL_SETTING"], "keep")
+                self.assertEqual(restored["PATH"].split(os.pathsep), list(map(str, (host_bin, cargo_home / "bin", local_bin))))
+                self.assertEqual(environment["LD_LIBRARY_PATH"], str(bundle))
+                self.assertNotIn("LD_LIBRARY_PATH", backend.host_environment({"LD_LIBRARY_PATH": str(bundle)}))
+
+
+@unittest.skipUnless(shutil.which("git"), "Git is required for local Git integration tests")
+class LibraryTests(unittest.TestCase):
+    def setUp(self):
+        folder = TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.root = Path(folder.name).resolve()
+        config = self.root / "git-test.config"
+        config.touch()
+        git_environment = patch.dict(os.environ, {"GIT_CONFIG_GLOBAL": str(config), "GIT_CONFIG_NOSYSTEM": "1"})
+        git_environment.start()
+        self.addCleanup(git_environment.stop)
+
+        self.origin = self.root / "upstream fixture"
+        self.origin.mkdir()
+        self.git(self.origin, "init", "-q")
+        self.git(self.origin, "config", "user.name", "Sunset Launcher Tests")
+        self.git(self.origin, "config", "user.email", "sunset-tests@example.invalid")
+        (self.origin / "build.py").write_text(
+            "from shutil import copyfile\ncopyfile('game_runner.py', 'artifact.py')\n",
+            encoding="utf-8",
+        )
+        (self.origin / ".gitignore").write_text("artifact.py\n", encoding="utf-8")
+        self.commit_runner("initial")
+        self.game = self.root / "Game {with spaces}.exe"
+        self.game.touch()
+
+        recipe = Recipe(
+            dependencies=(),
+            steps=(Step(("{python}", "build.py"), "Build the fixture"),),
+            artifact="artifact.py",
+            command=("{python}", "{artifact}", "{game}"),
+            runtime="native",
+        )
+        host = "windows" if sys.platform == "win32" else sys.platform
+        self.project = replace(PROJECTS[0], repository=self.origin.as_uri(), recipes={host: recipe})
+        self.library = Library(self.root / "Launcher data")
+        self.output = []
+
+    def git(self, directory, *arguments):
+        result = subprocess.run(
+            ["git", "-C", str(directory), *arguments], capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+
+    def commit_runner(self, message):
+        (self.origin / "game_runner.py").write_text(
+            f"import sys\nprint({message!r}, sys.argv[1])\n", encoding="utf-8",
+        )
+        self.git(self.origin, "add", ".")
+        self.git(self.origin, "commit", "-qm", message)
+        return self.git(self.origin, "rev-parse", "HEAD")
+
+    def build(self, *, update=False):
+        return self.library.build(self.project, update, Runner(self.output.append))
+
+    def test_clone_build_update_and_launch(self):
+        first = self.git(self.origin, "rev-parse", "HEAD")
+        self.assertEqual(self.build(), first)
+        self.assertEqual(self.library.revision(self.project), first)
+        self.library.launch(self.project, str(self.game), None, Runner(self.output.append))
+        self.assertIn(f"initial {self.game}\n", self.output)
+
+        second = self.commit_runner("updated")
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.build(update=True), second)
+        self.assertEqual(self.library.revision(self.project), second)
+        self.library.launch(self.project, str(self.game), None, Runner(self.output.append))
+        self.assertIn(f"updated {self.game}\n", self.output)
+
+    def test_delete_generated_files_keeps_checkout_game_and_modified_outputs(self):
+        with (self.origin / "build.py").open("a", encoding="utf-8") as build:
+            build.write("from pathlib import Path\n")
+            for name in ("provider.dll", "changed.dll"):
+                build.write(f"Path({name!r}).write_bytes(b'compiled')\n")
+        (self.origin / ".gitignore").write_text("artifact.py\n*.dll\n", encoding="utf-8")
+        self.commit_runner("companion binaries")
+        host, recipe = next(iter(self.project.recipes.items()))
+        recipe = replace(recipe, companion_outputs=("provider.dll", "changed.dll"))
+        self.project = replace(self.project, recipes={host: recipe})
+        built = self.build()
+        source = self.library.source(self.project)
+        (source / "changed.dll").write_text("manual replacement", encoding="utf-8")
+        for path in (source / "extra.dll", self.library.prefix(self.project) / "saves", self.game):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"user data")
+
+        self.library.delete_build(self.project, Runner(self.output.append))
+
+        self.assertFalse((source / "artifact.py").exists())
+        self.assertFalse((source / "provider.dll").exists())
+        self.assertEqual((source / "changed.dll").read_text(encoding="utf-8"), "manual replacement")
+        self.assertIn("Kept changed output changed.dll.\n", self.output)
+        self.assertTrue((source / "game_runner.py").is_file())
+        for path in (source / "extra.dll", self.library.prefix(self.project) / "saves", self.game):
+            self.assertEqual(path.read_bytes(), b"user data")
+        self.assertFalse(self.library.has_build_record(self.project))
+        self.assertIsNone(self.library.revision(self.project))
+        self.assertEqual(self.build(update=True), built)
+
+    def test_delete_legacy_build_only_removes_its_executable(self):
+        built = self.build()
+        source = self.library.source(self.project)
+        record = source.parent / "build.json"
+        record.write_text(json.dumps({"artifact": "artifact.py", "revision": built}), encoding="utf-8")
+        os.utime(record, ns=(record.stat().st_atime_ns, max(record.stat().st_mtime_ns, (source / "artifact.py").stat().st_ctime_ns)))
+        (source / "other.dll").touch()
+
+        self.library.delete_build(self.project, Runner(self.output.append))
+
+        self.assertFalse((source / "artifact.py").exists())
+        self.assertTrue((source / "other.dll").is_file())
+
+    def test_delete_does_not_follow_a_redirected_checkout(self):
+        self.build()
+        source = self.library.source(self.project)
+        elsewhere = self.root / "other checkout"
+        source.rename(elsewhere)
+        try:
+            source.symlink_to(elsewhere, target_is_directory=True)
+        except OSError as error:
+            self.skipTest(f"Directory symlinks are unavailable: {error}")
+
+        self.library.delete_build(self.project, Runner(self.output.append))
+
+        self.assertTrue((elsewhere / "artifact.py").is_file())
+        self.assertTrue(source.is_symlink())
+
+    def test_missing_system_python_is_reported_before_cloning(self):
+        with patch.object(backend, "host_python", return_value=None):
+            with self.assertRaisesRegex(OperationError, "Install system Python"):
+                self.build()
+        self.assertFalse(self.library.source(self.project).exists())
+
+    def test_missing_rust_target_stops_before_build_and_preserves_existing_artifact(self):
+        built_revision = self.build()
+        host, recipe = next(iter(self.project.recipes.items()))
+        recipe = replace(recipe, rust_target="x86_64-pc-windows-msvc")
+        self.project = replace(self.project, recipes={host: recipe})
+        runner = Runner(self.output.append)
+        with (
+            patch.object(backend.shutil, "which", return_value="tool-is-on-path"),
+            patch.object(runner, "run", return_value=str(self.root / "missing-target-lib")),
+        ):
+            with self.assertRaisesRegex(SetupRequired, "rustup target add x86_64-pc-windows-msvc"):
+                self.library.build(self.project, False, runner)
+        self.assertEqual(self.library.revision(self.project), built_revision)
+
+    def test_tuxbox_reports_dxc_and_sdk_together_before_cloning(self):
+        host, recipe = next(iter(self.project.recipes.items()))
+        recipe = replace(recipe, needs_dxc=True, needs_xwin_sdk=True)
+        self.project = replace(self.project, recipes={host: recipe})
+        with (
+            patch.dict(os.environ, {"DXC": str(self.root / "missing-dxc"), "XWIN_SDK_ROOT": str(self.root / "missing-sdk")}),
+            self.assertRaisesRegex(SetupRequired, "DirectX Shader Compiler.*Windows SDK/CRT cache"),
+        ):
+            self.build(update=True)
+        self.assertFalse(self.library.source(self.project).exists())
+
+    def test_failed_fetch_preserves_the_previous_build(self):
+        first = self.build()
+        self.origin.rename(self.origin.with_name("unavailable"))
+        with self.assertRaisesRegex(OperationError, "git.*exited with code"):
+            self.build(update=True)
+        self.assertEqual(self.library.revision(self.project), first)
+
+    def test_update_preserves_local_tracked_edits(self):
+        first = self.build(update=True)
+        tracked = self.library.source(self.project) / "game_runner.py"
+        tracked.write_text("# A local edit\n", encoding="utf-8")
+        self.commit_runner("upstream update")
+
+        with self.assertRaisesRegex(OperationError, "local tracked changes"):
+            self.build(update=True)
+        self.assertEqual(tracked.read_text(encoding="utf-8"), "# A local edit\n")
+        self.assertEqual(self.library.revision(self.project), first)
+
+    def test_successful_command_without_artifact_invalidates_previous_build(self):
+        self.build()
+        host, recipe = next(iter(self.project.recipes.items()))
+        broken_recipe = replace(
+            recipe, steps=(Step(("{python}", "-c", "print('no application output')"), "Empty build"),),
+        )
+        self.project = replace(self.project, recipes={host: broken_recipe})
+        with self.assertRaisesRegex(OperationError, "did not produce artifact.py"):
+            self.build()
+        self.assertIsNone(self.library.revision(self.project))

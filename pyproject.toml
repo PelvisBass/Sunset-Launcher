@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sunset-launcher"
+version = "0.1.0"
+description = "Desktop build and launch manager for Xbox Series compatibility layers"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["PySide6-Essentials>=6.8,<7"]
+
+[project.optional-dependencies]
+bundle = ["pyinstaller>=6.16,<7; sys_platform == 'linux'"]
+
+[project.gui-scripts]
+sunset-launcher = "sunset_launcher.__main__:main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = false
+
+[tool.setuptools.package-data]
+sunset_launcher = ["style.qss", "assets/harbor.jpg"]

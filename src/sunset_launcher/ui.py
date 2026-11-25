@@ -1,0 +1,904 @@
+"""Desktop views and background job coordination."""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import sys
+from datetime import datetime
+from pathlib import Path
+from uuid import uuid4
+
+from PySide6.QtCore import QMimeData, QPoint, QRectF, QSettings, QThread, Qt, QUrl, QObject, Signal, Slot
+from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
+)
+
+from .backend import Cancelled, Library, OperationError, Runner, SetupRequired, host_environment, recipe_for
+from .catalog import PROJECTS, Project
+from .proton import ProtonInstall, custom_proton, discover_proton, prepared_wine_prefix, proton_supported
+
+
+def label(value: str, style: str = "", *, wrap: bool = False) -> QLabel:
+    widget = QLabel(value)
+    widget.setTextFormat(Qt.TextFormat.PlainText)
+    widget.setObjectName(style)
+    widget.setWordWrap(wrap)
+    return widget
+
+
+def button(value: str, *, quiet: bool = False, primary: bool = False) -> QPushButton:
+    widget = QPushButton(value)
+    widget.setProperty("quiet", quiet)
+    if primary:
+        widget.setObjectName("primary")
+    widget.setCursor(Qt.CursorShape.PointingHandCursor)
+    return widget
+
+
+def rule() -> QFrame:
+    line = QFrame()
+    line.setProperty("rule", True)
+    line.setFixedHeight(1)
+    return line
+
+
+def open_url(url: QUrl) -> bool:
+    if getattr(sys, "frozen", False) and sys.platform == "linux":
+        env = host_environment()
+        if opener := shutil.which("xdg-open", path=env.get("PATH")):
+            target = url.toLocalFile() if url.isLocalFile() else url.toString()
+            try:
+                subprocess.Popen(
+                    [opener, target], env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except OSError:
+                return False
+            return True
+    return QDesktopServices.openUrl(url)
+
+
+def sun_logo() -> QPixmap:
+    pixmap = QPixmap(80, 80)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    edge = QRectF(4, 4, 72, 72)
+    circle = QPainterPath()
+    circle.addEllipse(edge)
+    painter.setClipPath(circle)
+    gradient = QLinearGradient(20, 80, 56, 0)
+    gradient.setColorAt(0, QColor("#c26cce"))
+    gradient.setColorAt(0.5, QColor("#fa9ebd"))
+    gradient.setColorAt(1, QColor("#ffc08a"))
+    painter.fillRect(edge, gradient)
+    for y, height in ((42, 3), (51, 4), (61, 5), (71, 6)):
+        painter.fillRect(0, y, 80, height, QColor("#281b32"))
+    painter.end()
+    return pixmap
+
+
+class Hero(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.art = QPixmap(str(Path(__file__).parent / "assets" / "harbor.jpg"))
+        self.setFixedHeight(195)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(27, 14, 22, 22)
+        layout.setSpacing(2)
+        layout.addStretch()
+        layout.addWidget(label("XBOX SERIES COMPATIBILITY", "eyebrow"))
+        layout.addWidget(label("Build library", "heroTitle"))
+        layout.addWidget(label("Build, update and launch your Xbox translation layers.", "heroText"))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        target = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        corners = QPainterPath()
+        corners.addRoundedRect(target, 15, 15)
+        painter.setClipPath(corners)
+        painter.fillRect(target, QColor("#40253c"))
+        if not self.art.isNull():
+            scale = max(target.width() / self.art.width(), target.height() / self.art.height())
+            source_width, source_height = target.width() / scale, target.height() / scale
+            source = QRectF(
+                (self.art.width() - source_width) / 2,
+                (self.art.height() - source_height) * 0.63,
+                source_width, source_height,
+            )
+            painter.drawPixmap(target, self.art, source)
+        shade = QLinearGradient(target.topLeft(), target.topRight())
+        shade.setColorAt(0, QColor(19, 12, 25, 215))
+        shade.setColorAt(0.53, QColor(19, 12, 25, 105))
+        shade.setColorAt(1, QColor(19, 12, 25, 14))
+        painter.fillRect(target, shade)
+        painter.setClipping(False)
+        painter.setPen(QColor("#664159"))
+        painter.drawPath(corners)
+
+
+class ProjectRow(QPushButton):
+    def __init__(self, project: Project):
+        super().__init__()
+        self.project = project
+        self.drag_start: QPoint | None = None
+        self.setProperty("projectRow", True)
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(72)
+        self.setAccessibleName(project.name)
+        self.setToolTip("Drag to reorder")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 9, 12, 9)
+        layout.setSpacing(11)
+
+        initials = label(project.name[0].upper())
+        initials.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        initials.setFixedSize(39, 39)
+        accent = QColor(project.accent)
+        tint = QColor(53, 36, 61)
+        initials.setStyleSheet(
+            f"background: {tint.name()}; color: {accent.name()}; border-radius: 9px;"
+            "font-size: 19px; font-weight: 800;"
+        )
+        layout.addWidget(initials)
+        titles = QVBoxLayout()
+        titles.setSpacing(1)
+        titles.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        titles.addWidget(label(project.name, "rowTitle"))
+        self.runtime = label("", "rowDetail")
+        titles.addWidget(self.runtime)
+        layout.addLayout(titles, 1)
+        self.status = label("", "status")
+        layout.addWidget(self.status, alignment=Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(label("⠿", "dragGrip"), alignment=Qt.AlignmentFlag.AlignVCenter)
+        for child in self.findChildren(QLabel):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_start = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        start = self.drag_start
+        if start is not None and event.buttons() & Qt.MouseButton.LeftButton and (
+            event.position().toPoint() - start
+        ).manhattanLength() >= QApplication.startDragDistance():
+            self.drag_start = None
+            self.setDown(False)
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setData("application/x-sunset-project", self.project.key.encode())
+            drag.setMimeData(mime)
+            drag.setPixmap(self.grab())
+            drag.setHotSpot(start)
+            drag.exec(Qt.DropAction.MoveAction)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self.drag_start = None
+        super().mouseReleaseEvent(event)
+
+    def update_status(self, status: str, runtime: str):
+        self.runtime.setText(runtime)
+        self.status.setText(status)
+        color = {
+            "Ready": "#9ce1ce", "Failed": "#ffafa8", "Building": "#ffb895",
+            "Updating": "#ffb895", "Running": "#f7a7ce", "Queued": "#dfbae9",
+            "Needs setup": "#ffcf9a",
+        }.get(status, "#bbb0c6")
+        self.status.setStyleSheet(f"color: {color};")
+        self.setAccessibleDescription(f"{runtime}, {status}")
+
+
+class ProjectList(QWidget):
+    reordered = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.entries = QVBoxLayout(self)
+        self.entries.setContentsMargins(0, 3, 0, 3)
+        self.entries.setSpacing(8)
+        self.marker = QFrame(self)
+        self.marker.setObjectName("dropMarker")
+        self.marker.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.marker.hide()
+
+    def _rows(self) -> list[ProjectRow]:
+        return [self.entries.itemAt(index).widget() for index in range(self.entries.count())]
+
+    def projects(self) -> tuple[Project, ...]:
+        return tuple(row.project for row in self._rows())
+
+    def _accept_move(self, event) -> bool:
+        source = event.source()
+        if (not event.mimeData().hasFormat("application/x-sunset-project")
+                or not isinstance(source, ProjectRow) or self.entries.indexOf(source) < 0):
+            return False
+        event.setDropAction(Qt.DropAction.MoveAction)
+        event.accept()
+        return True
+
+    def _slot_at(self, y: float) -> int:
+        rows = self._rows()
+        return next((index for index, row in enumerate(rows) if y < row.geometry().center().y()), len(rows))
+
+    def dragEnterEvent(self, event):
+        self._accept_move(event)
+
+    def dragMoveEvent(self, event):
+        if self._accept_move(event):
+            rows = self._rows()
+            slot = self._slot_at(event.position().y())
+            y = rows[slot].y() - 3 if slot < len(rows) else rows[-1].geometry().bottom() + 1
+            self.marker.setGeometry(0, y, self.width(), 3)
+            self.marker.raise_()
+            self.marker.show()
+
+    def dragLeaveEvent(self, event):
+        self.marker.hide()
+
+    def dropEvent(self, event):
+        self.marker.hide()
+        if self._accept_move(event):
+            self.move_row(event.source(), self._slot_at(event.position().y()))
+
+    def move_row(self, row: ProjectRow, slot: int):
+        old = self.entries.indexOf(row)
+        destination = slot - (slot > old)
+        if destination != old:
+            self.entries.removeWidget(row)
+            self.entries.insertWidget(destination, row)
+            self.reordered.emit()
+
+
+class Job(QObject):
+    line = Signal(str)
+    state = Signal(str, str)
+    complete = Signal(str)
+
+    def __init__(
+        self, library: Library, projects: tuple[Project, ...], action: str,
+        game: str, proton: ProtonInstall | None, prepared_prefix: Path | None,
+    ):
+        super().__init__()
+        self.library = library
+        self.projects = projects
+        self.action = action
+        self.game = game
+        self.proton = proton
+        self.prepared_prefix = prepared_prefix
+        self.runner = Runner(self.line.emit)
+
+    @Slot()
+    def execute(self):
+        failures = 0
+        setup_needed = 0
+        try:
+            logs = self.library.data / "logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            name = datetime.now().strftime("%Y%m%d-%H%M%S") + f"-{uuid4().hex[:6]}.log"
+            with (logs / name).open("w", encoding="utf-8", buffering=1) as log:
+                def output(message: str):
+                    log.write(message)
+                    self.line.emit(message)
+
+                self.runner.output = output
+                for project in self.projects:
+                    self.runner.check_cancelled()
+                    verb = {"build": "Building", "update": "Updating", "launch": "Running", "delete": "Deleting"}[self.action]
+                    self.state.emit(project.key, verb)
+                    output(f"\n[{project.name}] {verb}\n")
+                    try:
+                        if self.action == "launch":
+                            self.library.launch(
+                                project, self.game, self.proton, self.runner, prepared_prefix=self.prepared_prefix,
+                            )
+                            output("Exited successfully.\n")
+                        elif self.action == "delete":
+                            self.library.delete_build(project, self.runner)
+                        else:
+                            revision = self.library.build(project, self.action == "update", self.runner)
+                            output(f"Built revision {revision}.\n")
+                    except Cancelled:
+                        self.state.emit(project.key, "Stopped")
+                        raise
+                    except SetupRequired as error:
+                        setup_needed += 1
+                        self.state.emit(project.key, "Needs setup")
+                        output(f"Setup required: {error}\n")
+                    except (OSError, OperationError, ValueError) as error:
+                        failures += 1
+                        self.state.emit(project.key, "Failed")
+                        output(f"Error: {error}\n")
+                    else:
+                        self.state.emit(project.key, "Not built" if self.action == "delete" else "Ready")
+                if setup_needed or failures:
+                    result = " · ".join(
+                        message for count, message in (
+                            (setup_needed, f"Setup needed for {setup_needed}"),
+                            (failures, f"{failures} failed"),
+                        ) if count
+                    )
+                else:
+                    result = {"launch": "Launch finished", "delete": "Build removed"}.get(self.action, "Build finished")
+        except Cancelled as error:
+            self.line.emit(f"\n{error}\n")
+            result = "Stopped"
+        except Exception as error:
+            self.line.emit(f"\nError: {error}\n")
+            result = "Job failed"
+        self.complete.emit(result)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self, data: Path, *, scan_runtime: bool = True):
+        super().__init__()
+        self.library = Library(data)
+        self.settings = QSettings(str(data / "preferences.ini"), QSettings.Format.IniFormat)
+        self.selected = next(
+            (project for project in PROJECTS if project.key == self.settings.value("project")),
+            PROJECTS[0],
+        )
+        self.thread: QThread | None = None
+        self.worker: Job | None = None
+        self.states: dict[str, str] = {}
+        self.rows: dict[str, ProjectRow] = {}
+        self.setWindowTitle("Sunset Launcher")
+        self.setWindowIcon(QIcon(sun_logo()))
+        self.setMinimumSize(870, 620)
+        self.resize(1130, 790)
+
+        content = QWidget()
+        self.setCentralWidget(content)
+        layout = QHBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.pages = QStackedWidget()
+        layout.addWidget(self._sidebar())
+        layout.addWidget(self.pages, 1)
+        self.pages.addWidget(self._library_page())
+        self.pages.addWidget(self._activity_page())
+        if scan_runtime:
+            self.scan_proton()
+        self._select(self.selected)
+
+    def _sidebar(self) -> QWidget:
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(210)
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(15, 25, 15, 14)
+        layout.setSpacing(7)
+        branding = QHBoxLayout()
+        branding.setSpacing(9)
+        mark = QLabel()
+        mark.setPixmap(sun_logo().scaled(32, 32, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        branding.addWidget(mark)
+        branding.addWidget(label("Sunset Launcher", "brand"), 1)
+        layout.addLayout(branding)
+        layout.addSpacing(19)
+
+        self.nav = QButtonGroup(self)
+        for index, title in enumerate(("Library", "Activity")):
+            tab = button(title)
+            tab.setCheckable(True)
+            tab.setProperty("nav", True)
+            self.nav.addButton(tab, index)
+            layout.addWidget(tab)
+        self.nav.button(0).setChecked(True)
+        self.nav.idClicked.connect(self.pages.setCurrentIndex)
+
+        layout.addStretch()
+        self.summary = label("Idle", "muted", wrap=True)
+        self.summary.setIndent(4)
+        layout.addWidget(self.summary)
+        layout.addWidget(rule())
+        data = button("Open data folder", quiet=True)
+        data.clicked.connect(lambda: self._open_folder(self.library.data))
+        layout.addWidget(data)
+        return sidebar
+
+    def _library_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("libraryPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 23, 24, 23)
+        layout.setSpacing(13)
+        layout.addWidget(Hero())
+        header = QHBoxLayout()
+        header.addWidget(label("Projects", "sectionTitle"), 1)
+        self.update_all = button("Update && build all")
+        self.update_all.setToolTip("Clone missing projects, then fetch and build each supported project.")
+        self.update_all.clicked.connect(lambda: self._start(
+            tuple(project for project in self.project_list.projects() if recipe_for(project)), "update",
+        ))
+        header.addWidget(self.update_all)
+        layout.addLayout(header)
+
+        grid = QHBoxLayout()
+        grid.setSpacing(15)
+        self.project_list = ProjectList()
+        self.selection = QButtonGroup(self)
+        pending = {project.key: project for project in PROJECTS}
+        restored = []
+        for key in self.settings.value("projectOrder", [], type=list):
+            if isinstance(key, str) and key in pending:
+                restored.append(pending.pop(key))
+        for project in (*restored, *pending.values()):
+            row = ProjectRow(project)
+            row.clicked.connect(lambda checked=False, item=project: self._select(item))
+            self.selection.addButton(row)
+            self.rows[project.key] = row
+            self.project_list.entries.addWidget(row)
+        self.project_list.reordered.connect(self._save_project_order)
+        grid.addWidget(self.project_list, 5, Qt.AlignmentFlag.AlignTop)
+        detail = self._details()
+        detail.setMinimumWidth(365)
+        grid.addWidget(detail, 6)
+        layout.addLayout(grid)
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _details(self) -> QFrame:
+        detail = QFrame()
+        detail.setObjectName("detail")
+        layout = QVBoxLayout(detail)
+        layout.setContentsMargins(15, 13, 15, 13)
+        layout.setSpacing(7)
+
+        heading = QHBoxLayout()
+        self.project_name = label("", "projectTitle")
+        heading.addWidget(self.project_name, 1)
+        self.revision = label("", "status")
+        heading.addWidget(self.revision)
+        layout.addLayout(heading)
+        self.description = label("", "muted", wrap=True)
+        layout.addWidget(self.description)
+        sources = QHBoxLayout()
+        sources.setSpacing(0)
+        source = button("Repository ↗", quiet=True)
+        source.clicked.connect(lambda: open_url(QUrl(self.selected.repository)))
+        self.checkout = button("Build folder", quiet=True)
+        self.checkout.clicked.connect(lambda: self._open_folder(self.library.source(self.selected)))
+        setup = button("Build setup", quiet=True)
+        setup.clicked.connect(self._show_setup)
+        sources.addWidget(source)
+        sources.addWidget(setup)
+        sources.addWidget(self.checkout)
+        sources.addStretch()
+        layout.addLayout(sources)
+
+        builds = QHBoxLayout()
+        self.build = button("Build", primary=True)
+        self.build.setToolTip("Clone on first build, then compile the local checkout.")
+        self.build.clicked.connect(lambda: self._start((self.selected,), "build"))
+        self.update = button("Update && build")
+        self.update.setToolTip("Fetch upstream changes, fast-forward the checkout, then compile.")
+        self.update.clicked.connect(lambda: self._start((self.selected,), "update"))
+        self.delete = button("Delete build…", quiet=True)
+        self.delete.setToolTip("Remove the recorded build outputs for this project.")
+        self.delete.clicked.connect(self._confirm_delete)
+        builds.addWidget(self.build)
+        builds.addWidget(self.update)
+        builds.addWidget(self.delete)
+        builds.addStretch()
+        layout.addLayout(builds)
+        layout.addWidget(rule())
+
+        game_controls = QHBoxLayout()
+        self.game_label = label("")
+        self.game_label.setProperty("fieldLabel", True)
+        layout.addWidget(self.game_label)
+        self.game = QLineEdit()
+        self.game_label.setBuddy(self.game)
+        self.game.setPlaceholderText("Choose your game files…")
+        self.game.textChanged.connect(self._refresh_actions)
+        self.game.editingFinished.connect(self._save_game)
+        game_controls.addWidget(self.game, 1)
+        self.browse = button("Browse…")
+        self.browse.clicked.connect(self._browse_game)
+        game_controls.addWidget(self.browse)
+        layout.addLayout(game_controls)
+
+        self.runtime_box = QWidget()
+        runtime = QVBoxLayout(self.runtime_box)
+        runtime.setContentsMargins(0, 0, 0, 0)
+        runtime.setSpacing(3)
+        title = label("Proton version")
+        title.setProperty("fieldLabel", True)
+        runtime.addWidget(title)
+        self.proton = QComboBox()
+        self.proton.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self.proton.setMinimumWidth(100)
+        title.setBuddy(self.proton)
+        self.proton.currentIndexChanged.connect(self._save_proton)
+        runtime.addWidget(self.proton)
+        links = QHBoxLayout()
+        links.setSpacing(0)
+        self.rescan = button("Rescan Steam", quiet=True)
+        self.rescan.clicked.connect(self.scan_proton)
+        self.choose_proton = button("Add Proton…", quiet=True)
+        self.choose_proton.clicked.connect(self._browse_proton)
+        self.prefix = button("Open prefix", quiet=True)
+        self.prefix.clicked.connect(self._prefix_action)
+        links.addWidget(self.rescan)
+        links.addWidget(self.choose_proton)
+        links.addWidget(self.prefix)
+        links.addStretch()
+        runtime.addLayout(links)
+        layout.addWidget(self.runtime_box)
+
+        self.note = label("", "note", wrap=True)
+        layout.addWidget(self.note)
+        launch_row = QHBoxLayout()
+        self.launch = button("Launch", primary=True)
+        self.launch.clicked.connect(lambda: self._start((self.selected,), "launch"))
+        self.launch.setMinimumWidth(87)
+        launch_row.addWidget(self.launch)
+        launch_row.addStretch()
+        layout.addLayout(launch_row)
+        return detail
+
+    def _activity_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("activityPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 23, 24, 23)
+        layout.setSpacing(12)
+        header = QHBoxLayout()
+        header.addWidget(label("Activity", "sectionTitle"), 1)
+        self.stop = button("Stop job")
+        self.stop.clicked.connect(self._stop)
+        self.stop.setEnabled(False)
+        header.addWidget(self.stop)
+        logs = button("Open saved logs")
+        logs.clicked.connect(lambda: self._open_folder(self.library.data / "logs", create=True))
+        header.addWidget(logs)
+        layout.addLayout(header)
+        self.console = QPlainTextEdit()
+        self.console.setObjectName("log")
+        self.console.setReadOnly(True)
+        self.console.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.console.setMaximumBlockCount(5000)
+        self.console.setPlaceholderText("Build and launch output will appear here.")
+        self.console.setAccessibleName("Build and launch output")
+        layout.addWidget(self.console, 1)
+        return page
+
+    @staticmethod
+    def _runtime_name(project: Project) -> str:
+        recipe = recipe_for(project)
+        if recipe is None:
+            return "Unavailable on this OS"
+        return {"proton": "Proton", "managed": f"Managed by {project.name}", "native": "Native"}[recipe.runtime]
+
+    def _select(self, project: Project):
+        if project != self.selected:
+            self._save_game()
+        self.selected = project
+        self.settings.setValue("project", project.key)
+        self.rows[project.key].setChecked(True)
+        self.project_name.setText(project.name)
+        self.description.setText(project.description)
+        self.game_label.setText("Game path" if project.game_input == "either" else "Game executable")
+        self.game.setText(self.settings.value(f"game/{project.key}", "", type=str))
+        recipe = recipe_for(project)
+        uses_proton = recipe is not None and recipe.runtime == "proton"
+        self.runtime_box.setVisible(uses_proton)
+        note = recipe.launch_note if recipe is not None else ""
+        self.note.setText(note)
+        self.note.setVisible(bool(note))
+        self._restore_proton()
+        self._refresh()
+
+    def _refresh(self):
+        for project in PROJECTS:
+            revision = self.library.revision(project)
+            recipe = recipe_for(project)
+            status = self.states.get(project.key) or (
+                "Unsupported" if recipe is None else "Ready" if revision else "Not built"
+            )
+            self.rows[project.key].update_status(status, self._runtime_name(project))
+        revision = self.library.revision(self.selected)
+        self.revision.setText(f"Commit {revision[:7]}" if revision else "")
+        self.revision.setToolTip(revision or "")
+        self.checkout.setEnabled(self.library.source(self.selected).is_dir())
+        recipe = recipe_for(self.selected)
+        supports_prepared = recipe is not None and bool(recipe.prepared_wine_env)
+        prepared = self._prepared_prefix()
+        self.prefix.setEnabled(supports_prepared or self.library.prefix(self.selected).is_dir())
+        self.prefix.setText(
+            "Prepared prefix ✓" if prepared is not None else "Wine prefix…" if supports_prepared else "Open prefix"
+        )
+        self.prefix.setToolTip(str(prepared) if prepared is not None else "")
+        self._refresh_actions()
+
+    @Slot()
+    def _refresh_actions(self):
+        if not hasattr(self, "launch"):
+            return
+        idle = self.thread is None
+        recipe = recipe_for(self.selected)
+        proton = self._chosen_proton()
+        has_game = bool(self.game.text().strip())
+        ready = self.library.revision(self.selected) is not None
+        self.update_all.setEnabled(idle and any(recipe_for(project) for project in PROJECTS))
+        self.build.setEnabled(idle and recipe is not None)
+        self.update.setEnabled(idle and recipe is not None and self.library.source(self.selected).is_dir())
+        self.delete.setEnabled(idle and recipe is not None and self.library.has_build_record(self.selected))
+        self.game.setEnabled(recipe is not None)
+        self.browse.setEnabled(recipe is not None)
+        self.proton.setEnabled(self.proton.count() > 1)
+        can_launch = idle and recipe is not None and ready and has_game and (recipe.runtime != "proton" or proton is not None)
+        self.launch.setEnabled(can_launch)
+        if recipe is None:
+            reason = "No build recipe is available for this operating system."
+        elif not ready:
+            reason = "Build the project before launching."
+        elif not has_game:
+            reason = "Choose your game files."
+        elif recipe.runtime == "proton" and proton is None:
+            reason = "Select an installed Proton version."
+        else:
+            reason = "Launch the selected game."
+        self.launch.setToolTip(reason)
+
+    def _save_game(self):
+        self.settings.setValue(f"game/{self.selected.key}", self.game.text().strip())
+
+    def _save_project_order(self):
+        self.settings.setValue("projectOrder", [project.key for project in self.project_list.projects()])
+        self.settings.sync()
+
+    def _confirm_delete(self):
+        project = self.selected
+        if not self.delete.isEnabled():
+            return
+        box = QMessageBox(QMessageBox.Icon.Warning, "Delete build", f"Delete the {project.name} build?", parent=self)
+        box.setInformativeText("This removes recorded build files. Your game files, source checkout and saves are kept.")
+        delete = box.addButton("Delete build", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(cancel)
+        box.setEscapeButton(cancel)
+        box.exec()
+        if box.clickedButton() is delete:
+            self._start((project,), "delete")
+
+    def _browse_game(self):
+        if self.selected.game_input == "either":
+            menu = QMenu(self)
+            menu.addAction("Choose a game executable…", lambda: self._pick_game(False))
+            menu.addAction("Choose a game folder…", lambda: self._pick_game(True))
+            menu.exec(self.browse.mapToGlobal(self.browse.rect().bottomLeft()))
+        else:
+            self._pick_game(False)
+
+    def _pick_game(self, directory: bool):
+        existing = self.game.text().strip()
+        if directory:
+            picked = QFileDialog.getExistingDirectory(self, "Choose a game folder", existing)
+        else:
+            picked, _ = QFileDialog.getOpenFileName(
+                self, "Choose a game executable", existing, "Windows executables (*.exe *.EXE);;All files (*)",
+            )
+        if picked:
+            self.game.setText(picked)
+            self._save_game()
+
+    def _chosen_proton(self) -> ProtonInstall | None:
+        return self.proton.currentData()
+
+    def _restore_proton(self):
+        chosen = self.settings.value(f"proton/{self.selected.key}", "", type=str)
+        self.proton.blockSignals(True)
+        self.proton.setCurrentIndex(next(
+            (idx for idx in range(1, self.proton.count()) if str(self.proton.itemData(idx).executable) == chosen),
+            0,
+        ))
+        self.proton.blockSignals(False)
+
+    def _save_proton(self):
+        proton = self._chosen_proton()
+        self.settings.setValue(f"proton/{self.selected.key}", str(proton.executable) if proton else "")
+        self._refresh_actions()
+
+    def scan_proton(self):
+        if not proton_supported():
+            return
+        by_path = {item.executable: item for item in discover_proton()}
+        for path in self.settings.value("proton/customPaths", [], type=list):
+            if Path(path) not in by_path:
+                try:
+                    custom = custom_proton(path)
+                except (OSError, ValueError):
+                    continue
+                by_path[custom.executable] = custom
+
+        self.proton.blockSignals(True)
+        self.proton.clear()
+        self.proton.addItem("Select an installed version…" if by_path else "No Proton versions found")
+        for install in by_path.values():
+            self.proton.addItem(f"{install.name} · {install.source}", install)
+            self.proton.setItemData(self.proton.count() - 1, str(install.executable), Qt.ItemDataRole.ToolTipRole)
+        self.proton.blockSignals(False)
+        self._restore_proton()
+        self._refresh_actions()
+
+    def _browse_proton(self):
+        chosen, _ = QFileDialog.getOpenFileName(self, "Choose the executable proton script")
+        if not chosen:
+            return
+        try:
+            install = custom_proton(chosen)
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, "Invalid Proton path", str(error))
+            return
+        paths = self.settings.value("proton/customPaths", [], type=list)
+        path = str(install.executable)
+        if path not in paths:
+            self.settings.setValue("proton/customPaths", [*paths, path])
+        self.settings.setValue(f"proton/{self.selected.key}", path)
+        self.scan_proton()
+
+    def _prepared_prefix(self) -> Path | None:
+        path = self.settings.value(f"winePrefix/{self.selected.key}", "", type=str)
+        return Path(path) if path else None
+
+    def _prefix_action(self):
+        recipe = recipe_for(self.selected)
+        prefix = self._prepared_prefix()
+        active = prefix or self.library.prefix(self.selected)
+        if recipe is None or not recipe.prepared_wine_env:
+            self._open_folder(active)
+            return
+        menu = QMenu(self)
+        menu.addAction("Choose prepared Wine prefix…", self._choose_prepared_prefix)
+        menu.addAction("Open active prefix", lambda: self._open_folder(active)).setEnabled(active.is_dir())
+        menu.addAction("Use standard Proton", lambda: self._save_prepared_prefix("")).setEnabled(prefix is not None)
+        menu.exec(self.prefix.mapToGlobal(self.prefix.rect().bottomLeft()))
+
+    def _choose_prepared_prefix(self):
+        default = self._prepared_prefix() or Path.home()
+        chosen = QFileDialog.getExistingDirectory(self, "Choose a prepared Wine prefix", str(default))
+        if chosen:
+            try:
+                prefix = prepared_wine_prefix(Path(chosen))
+            except (OSError, ValueError) as error:
+                QMessageBox.warning(self, "Invalid Wine prefix", str(error))
+                return
+            self._save_prepared_prefix(str(prefix))
+
+    def _save_prepared_prefix(self, path: str):
+        self.settings.setValue(f"winePrefix/{self.selected.key}", path)
+        self._refresh()
+
+    def _show_setup(self):
+        project = self.selected
+        recipe = recipe_for(project)
+        box = QMessageBox(self)
+        box.setWindowTitle(f"{project.name} setup")
+        box.setText(f"{project.name} build setup")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        instructions = ["Install Git and add the build tools to PATH."]
+        if recipe is None:
+            instructions = ["This operating system has no build recipe for this project."]
+        else:
+            instructions.extend(recipe.requirements)
+        box.setInformativeText("\n\n".join(instructions))
+        guide = box.addButton("Open upstream guide", QMessageBox.ButtonRole.ActionRole)
+        title_guide = None
+        if recipe is not None and recipe.launch_url:
+            title_guide = box.addButton("Open launch guide", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is guide:
+            url = project.setup_url if sys.platform == "linux" else project.repository
+            open_url(QUrl(url))
+        elif recipe is not None and title_guide is not None and box.clickedButton() is title_guide:
+            open_url(QUrl(recipe.launch_url))
+
+    def _open_folder(self, path: Path, *, create: bool = False):
+        try:
+            if create:
+                path.mkdir(parents=True, exist_ok=True)
+            if not path.is_dir() or not open_url(QUrl.fromLocalFile(str(path))):
+                raise OSError(f"Could not open {path}")
+        except OSError as error:
+            QMessageBox.warning(self, "Folder unavailable", str(error))
+
+    def _start(self, projects: tuple[Project, ...], action: str):
+        if self.thread is not None or not projects:
+            return
+        self._save_game()
+        game = self.game.text().strip()
+        if action == "launch":
+            try:
+                self.library.game_path(projects[0], game)
+            except (OperationError, OSError, ValueError) as error:
+                QMessageBox.warning(self, "Game files unavailable", str(error))
+                return
+        for project in projects:
+            self.states[project.key] = "Queued"
+        self.summary.setText("Job queued")
+        self.stop.setEnabled(True)
+
+        self.thread = QThread(self)
+        self.worker = Job(self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix())
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.execute)
+        self.worker.line.connect(self._write_log)
+        self.worker.state.connect(self._job_state)
+        self.worker.complete.connect(self._job_complete)
+        self.worker.complete.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self._job_finished)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.start()
+        self._refresh()
+
+    @Slot(str)
+    def _write_log(self, message: str):
+        bar = self.console.verticalScrollBar()
+        follow = bar.value() == bar.maximum()
+        cursor = QTextCursor(self.console.document())
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.insertText(message)
+        if follow:
+            bar.setValue(bar.maximum())
+
+    @Slot(str, str)
+    def _job_state(self, key: str, state: str):
+        self.states[key] = state
+        if state in {"Building", "Updating", "Running", "Deleting"}:
+            name = next(project.name for project in PROJECTS if project.key == key)
+            self.summary.setText(f"{state} {name}")
+        self._refresh()
+
+    @Slot(str)
+    def _job_complete(self, result: str):
+        self.summary.setText(result)
+        self._write_log(f"\n{result}.\n")
+
+    @Slot()
+    def _job_finished(self):
+        self.thread = None
+        self.worker = None
+        self.states = {key: state for key, state in self.states.items() if state in {"Failed", "Needs setup", "Stopped"}}
+        self.stop.setEnabled(False)
+        self._refresh()
+
+    def _stop(self):
+        if self.worker is not None:
+            self.stop.setEnabled(False)
+            self.summary.setText("Stopping…")
+            self.worker.runner.cancel()
+
+    def closeEvent(self, event: QCloseEvent):
+        if self.thread is not None:
+            event.ignore()
+            answer = QMessageBox.question(
+                self, "Job still running", "Stop the current job? You can close the launcher once it stops.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                self._stop()
+            return
+        self._save_game()
+        self.settings.sync()
+        super().closeEvent(event)
