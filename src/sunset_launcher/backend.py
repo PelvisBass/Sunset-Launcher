@@ -431,9 +431,7 @@ class Library:
         def git(*args: str, timeout: float | None = None) -> str:
             return runner.run(("git", *args), source, env=env, capture=True, timeout=timeout)
 
-        origin = git("config", "--get", "remote.origin.url")
-        if not self._matches_origin(origin, project.repository):
-            raise OperationError(f"The checkout's origin differs from the catalog: {origin}")
+        self._check_origin(project, git("config", "--get", "remote.origin.url"), git, runner)
         try:
             branch = git("symbolic-ref", "--quiet", "HEAD")
         except Cancelled:
@@ -462,6 +460,16 @@ class Library:
         ahead, behind = map(int, git("rev-list", "--left-right", "--count", f"{built}...{revision}").split())
         status = "Upstream diverged" if ahead and behind else "Local build ahead" if ahead else "Update available"
         return UpdateCheck(revision, status)
+
+    def _check_origin(self, project: Project, origin: str, git: Callable[..., str], runner: Runner) -> None:
+        """Accept the catalog's origin, and move a checkout from an earlier upstream address to it."""
+        if self._matches_origin(origin, project.repository):
+            return
+        if any(self._matches_origin(origin, previous) for previous in project.previous_repositories):
+            runner.output(f"{project.name} moved to {project.repository}. Updating the checkout's origin.\n")
+            git("remote", "set-url", "origin", project.repository)
+            return
+        raise OperationError(f"The checkout's origin differs from the catalog: {origin}")
 
     @staticmethod
     def _matches_origin(origin: str, repository: str) -> bool:
@@ -561,9 +569,7 @@ class Library:
             raise OperationError(f"The source folder is not a Git checkout: {source}")
 
         if update and not cloned:
-            origin = git("config", "--get", "remote.origin.url", capture=True)
-            if not self._matches_origin(origin, project.repository):
-                raise OperationError(f"The checkout's origin differs from the catalog: {origin}")
+            self._check_origin(project, git("config", "--get", "remote.origin.url", capture=True), git, runner)
             changed = git("status", "--porcelain", "--untracked-files=no", "--ignore-submodules=untracked", capture=True)
             if changed:
                 raise OperationError("The checkout has local tracked changes. Commit or stash them before updating.")
@@ -703,12 +709,15 @@ class Library:
             mode = recipe.console_modes[0] if console_mode is None else console_mode
             if mode not in recipe.console_modes:
                 raise OperationError(f"Unsupported console mode for {project.name}: {mode}")
-            for arg in option_args:
-                if arg == "--":
-                    break
-                if arg == "--console" or arg.startswith("--console="):
-                    raise OperationError("Choose the console mode in the selector and remove --console from Launch options.")
+            if not recipe.console_env:
+                for arg in option_args:
+                    if arg == "--":
+                        break
+                    if arg == "--console" or arg.startswith("--console="):
+                        raise OperationError("Choose the console mode in the selector and remove --console from Launch options.")
             values["console_mode"] = mode
+            if recipe.console_env and (device := dict(recipe.console_env_values).get(mode)):
+                extra_env = {recipe.console_env: device, **(extra_env or {})}
         command = expand_command(template, values, option_args if extra_args is None else extra_args)
         env = None
         if recipe.runtime == "proton":

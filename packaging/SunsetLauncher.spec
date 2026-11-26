@@ -13,6 +13,8 @@ analysis = Analysis(
     datas=[
         (str(package / "style.qss"), "sunset_launcher"),
         (str(package / "assets" / "harbor.jpg"), "sunset_launcher/assets"),
+        (str(package / "assets" / "chevron-down.png"), "sunset_launcher/assets"),
+        (str(package / "assets" / "check.png"), "sunset_launcher/assets"),
     ],
 )
 if sys.platform == "linux":

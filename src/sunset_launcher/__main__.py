@@ -31,7 +31,13 @@ def apply_theme(app: QApplication) -> None:
     }.items():
         palette.setColor(role, QColor(color))
     app.setPalette(palette)
-    app.setStyleSheet(Path(__file__).with_name("style.qss").read_text(encoding="utf-8"))
+    # Stylesheet urls resolve against the working directory, so give the bundled image's absolute path.
+    # Qt reads forward slashes on Windows too.
+    assets = (Path(__file__).parent / "assets").resolve()
+    style = Path(__file__).with_name("style.qss").read_text(encoding="utf-8")
+    for token, name in (("@CHEVRON@", "chevron-down.png"), ("@CHECK@", "check.png")):
+        style = style.replace(token, (assets / name).as_posix())
+    app.setStyleSheet(style)
 
 
 def smoke_test(app: QApplication) -> int:

@@ -181,6 +181,84 @@ def initials_badge(project: Project) -> QLabel:
     return initials
 
 
+CONSOLE_LABELS = {"auto": "Automatic", "series-x": "Series X", "series-s": "Series S"}
+
+
+def section(title: str) -> QLabel:
+    heading = label(title.upper(), "section")
+    heading.setContentsMargins(0, 6, 0, 0)
+    return heading
+
+
+class SegmentedControl(QWidget):
+    """A row of exclusive buttons with the small part of QComboBox's interface the window uses."""
+
+    activated = Signal(int)
+
+    def __init__(self):
+        super().__init__()
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(0)
+        self._group = QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._group.idClicked.connect(self.activated.emit)
+        self._data: list[object] = []
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def addItem(self, text: str, data: object = None):
+        segment = QPushButton(text)
+        segment.setCheckable(True)
+        segment.setProperty("segment", True)
+        segment.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._group.addButton(segment, len(self._data))
+        self._layout.addWidget(segment)
+        self._data.append(data)
+        self._shape()
+        if len(self._data) == 1:
+            segment.setChecked(True)
+        # Segments added after the panel was laid out must apply their stylesheet size first,
+        # and the panel must hear about it, or it keeps the shorter unstyled height.
+        segment.ensurePolished()
+        self.updateGeometry()
+
+    def _shape(self):
+        buttons = self._group.buttons()
+        for index, segment in enumerate(buttons):
+            position = "only" if len(buttons) == 1 else "first" if index == 0 else "last" if index == len(buttons) - 1 else "middle"
+            segment.setProperty("position", position)
+            segment.style().unpolish(segment)
+            segment.style().polish(segment)
+
+    def clear(self):
+        for segment in self._group.buttons():
+            self._group.removeButton(segment)
+            # Take it out now: deleteLater alone would leave it in the row until the event loop runs.
+            self._layout.removeWidget(segment)
+            segment.setParent(None)
+            segment.deleteLater()
+        self._data.clear()
+        self.updateGeometry()
+
+    def count(self) -> int:
+        return len(self._data)
+
+    def currentIndex(self) -> int:
+        return self._group.checkedId()
+
+    def currentData(self):
+        index = self.currentIndex()
+        return self._data[index] if 0 <= index < len(self._data) else None
+
+    def findData(self, data) -> int:
+        return self._data.index(data) if data in self._data else -1
+
+    def setCurrentIndex(self, index: int):
+        segment = self._group.button(index)
+        if segment is not None:
+            segment.setChecked(True)
+
+
 class NavButton(QPushButton):
     """A sidebar tab with a count or progress badge on the right."""
 
@@ -221,6 +299,7 @@ class InstallCard(QFrame):
         text = QVBoxLayout()
         text.setSpacing(2)
         heading = QHBoxLayout()
+        heading.setSpacing(9)
         heading.addWidget(label(project.name, "rowTitle"))
         heading.addWidget(label(runtime, "rowDetail"), 1, Qt.AlignmentFlag.AlignBottom)
         self.status = label("", "status")
@@ -668,6 +747,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.launcher_update)
         self.summary = label("Idle", "muted", wrap=True)
         self.summary.setIndent(4)
+        # Keep room for a three-line message so a long one never loses its last line.
+        self.summary.setMinimumHeight(self.summary.fontMetrics().lineSpacing() * 3 + 4)
+        self.summary.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        self.summary.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
         layout.addWidget(self.summary)
         layout.addWidget(rule())
         data = button("Open data folder", quiet=True)
@@ -738,8 +821,13 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.project_list, 5, Qt.AlignmentFlag.AlignTop)
         detail = self._details()
         detail.setMinimumWidth(365)
-        # Keep the panel at its natural height when the project list is taller.
-        grid.addWidget(detail, 6, Qt.AlignmentFlag.AlignTop)
+        # A stretch below keeps the panel at its natural height beside a taller list. Top alignment alone
+        # would size it from its size hint and clip wrapped text.
+        column = QVBoxLayout()
+        column.setSpacing(0)
+        column.addWidget(detail)
+        column.addStretch()
+        grid.addLayout(column, 6)
         layout.addWidget(self.library_grid)
         layout.addStretch()
 
@@ -753,69 +841,84 @@ class MainWindow(QMainWindow):
         detail = QFrame()
         detail.setObjectName("detail")
         layout = QVBoxLayout(detail)
-        layout.setContentsMargins(15, 13, 15, 13)
-        layout.setSpacing(7)
+        layout.setContentsMargins(18, 15, 18, 17)
+        layout.setSpacing(8)
 
         heading = QHBoxLayout()
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
         self.project_name = label("", "projectTitle")
-        heading.addWidget(self.project_name, 1)
         self.revision = label("", "status")
-        heading.addWidget(self.revision)
+        titles.addWidget(self.project_name)
+        titles.addWidget(self.revision)
+        heading.addLayout(titles, 1)
+        # Launch sits beside the name so it stays in view however long the panel gets.
+        self.launch = button("Launch", primary=True)
+        self.launch.setMinimumWidth(110)
+        self.launch.clicked.connect(lambda: self._start((self.selected,), "launch"))
+        heading.addWidget(self.launch, alignment=Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(heading)
         self.description = label("", "muted", wrap=True)
         layout.addWidget(self.description)
         sources = QHBoxLayout()
-        sources.setSpacing(0)
+        sources.setSpacing(2)
         self.repository = button("Repository ↗", quiet=True)
         self.repository.clicked.connect(lambda: open_url(QUrl(self.selected.repository)))
-        self.checkout = button("Build folder", quiet=True)
-        self.checkout.clicked.connect(lambda: self._open_folder(self.library.source(self.selected)))
         setup = button("Build setup", quiet=True)
         setup.clicked.connect(lambda: self._show_setup(self.selected))
-        sources.addWidget(self.repository)
-        sources.addWidget(setup)
-        sources.addWidget(self.checkout)
+        self.checkout = button("Build folder", quiet=True)
+        self.checkout.clicked.connect(lambda: self._open_folder(self.library.source(self.selected)))
+        for link in (self.repository, setup, self.checkout):
+            link.setProperty("link", True)
+            sources.addWidget(link)
         sources.addStretch()
         layout.addLayout(sources)
 
+        layout.addWidget(section("Build"))
         builds = QHBoxLayout()
-        self.build = button("Build", primary=True)
-        self.build.setToolTip("Clone on first build, then compile the local checkout.")
-        self.build.clicked.connect(lambda: self._start((self.selected,), "build"))
+        builds.setSpacing(8)
         self.update = button("Update && build")
         self.update.setToolTip("Fetch upstream changes, fast-forward the checkout, then compile.")
         self.update.clicked.connect(lambda: self._start((self.selected,), "update"))
+        self.build = button("Rebuild")
+        self.build.setToolTip("Compile the local checkout again.")
+        self.build.clicked.connect(lambda: self._start((self.selected,), "build"))
         self.delete = button("Delete build…", quiet=True)
-        self.delete.setToolTip("Remove the recorded build outputs for this project.")
+        self.delete.setProperty("danger", True)
+        self.delete.setToolTip("Remove the recorded build outputs. The layer moves back to Install.")
         self.delete.clicked.connect(self._confirm_delete)
-        builds.addWidget(self.build)
         builds.addWidget(self.update)
-        builds.addWidget(self.delete)
+        builds.addWidget(self.build)
         builds.addStretch()
+        builds.addWidget(self.delete)
         layout.addLayout(builds)
 
-        cache = QHBoxLayout()
+        layout.addWidget(section("Shaders"))
         self.shader_cache_size = label("Shader cache", "muted", wrap=True)
-        self.measure_shaders = button("Refresh size", quiet=True)
+        layout.addWidget(self.shader_cache_size)
+        cache = QHBoxLayout()
+        cache.setSpacing(8)
+        self.open_warmup = button("Warm up…")
+        self.open_warmup.setToolTip("Compile this layer's shaders for the shared game before playing.")
+        self.open_warmup.clicked.connect(lambda: self._open_warmup(self.selected))
+        self.measure_shaders = button("Refresh size")
         self.measure_shaders.setToolTip("Measure generated shaders and pipeline caches for this project again.")
         self.measure_shaders.clicked.connect(lambda: self._start((self.selected,), "shader_scan"))
         self.clear_shaders = button("Clear cache…", quiet=True)
+        self.clear_shaders.setProperty("danger", True)
         self.clear_shaders.setToolTip("Remove generated shaders and pipeline caches for this project.")
         self.clear_shaders.clicked.connect(self._confirm_shader_clear)
-        self.open_warmup = button("Warm up…", quiet=True)
-        self.open_warmup.setToolTip("Compile this layer's shaders for the shared game before playing.")
-        self.open_warmup.clicked.connect(lambda: self._open_warmup(self.selected))
-        cache.addWidget(self.shader_cache_size, 1)
         cache.addWidget(self.open_warmup)
         cache.addWidget(self.measure_shaders)
+        cache.addStretch()
         cache.addWidget(self.clear_shaders)
         layout.addLayout(cache)
-        layout.addWidget(rule())
 
+        layout.addWidget(section("Play"))
         self.runtime_box = QWidget()
         runtime = QVBoxLayout(self.runtime_box)
         runtime.setContentsMargins(0, 0, 0, 0)
-        runtime.setSpacing(3)
+        runtime.setSpacing(4)
         title = label("Proton version")
         title.setProperty("fieldLabel", True)
         runtime.addWidget(title)
@@ -826,30 +929,32 @@ class MainWindow(QMainWindow):
         self.proton.currentIndexChanged.connect(self._save_proton)
         runtime.addWidget(self.proton)
         links = QHBoxLayout()
-        links.setSpacing(0)
+        links.setSpacing(2)
         self.rescan = button("Rescan Steam", quiet=True)
         self.rescan.clicked.connect(self.scan_proton)
         self.choose_proton = button("Add Proton…", quiet=True)
         self.choose_proton.clicked.connect(self._browse_proton)
         self.prefix = button("Open prefix", quiet=True)
         self.prefix.clicked.connect(self._prefix_action)
-        links.addWidget(self.rescan)
-        links.addWidget(self.choose_proton)
-        links.addWidget(self.prefix)
+        for link in (self.rescan, self.choose_proton, self.prefix):
+            link.setProperty("link", True)
+            links.addWidget(link)
         links.addStretch()
         runtime.addLayout(links)
         layout.addWidget(self.runtime_box)
 
         self.console_mode_box = QWidget()
         mode_layout = QHBoxLayout(self.console_mode_box)
-        mode_layout.setContentsMargins(0, 0, 0, 0)
-        mode_title = label("Console mode")
+        mode_layout.setContentsMargins(0, 2, 0, 2)
+        mode_title = label("Console")
         mode_title.setProperty("fieldLabel", True)
-        self.console_mode = QComboBox()
+        self.console_mode = SegmentedControl()
+        self.console_mode.setToolTip("The console model the game sees, which sets its memory and device type.")
         mode_title.setBuddy(self.console_mode)
         self.console_mode.activated.connect(self._save_console_mode)
         mode_layout.addWidget(mode_title)
-        mode_layout.addWidget(self.console_mode, 1)
+        mode_layout.addStretch()
+        mode_layout.addWidget(self.console_mode)
         layout.addWidget(self.console_mode_box)
 
         options_title = label("Launch options")
@@ -863,13 +968,6 @@ class MainWindow(QMainWindow):
 
         self.note = label("", "note", wrap=True)
         layout.addWidget(self.note)
-        launch_row = QHBoxLayout()
-        self.launch = button("Launch", primary=True)
-        self.launch.clicked.connect(lambda: self._start((self.selected,), "launch"))
-        self.launch.setMinimumWidth(87)
-        launch_row.addWidget(self.launch)
-        launch_row.addStretch()
-        layout.addLayout(launch_row)
         return detail
 
     @staticmethod
@@ -993,7 +1091,7 @@ class MainWindow(QMainWindow):
         options = QGridLayout(settings)
         options.setContentsMargins(15, 13, 15, 13)
         options.setHorizontalSpacing(14)
-        options.setVerticalSpacing(4)
+        options.setVerticalSpacing(7)
         jobs_title = label("Parallel compiles")
         jobs_title.setProperty("fieldLabel", True)
         options.addWidget(jobs_title, 0, 0)
@@ -1076,7 +1174,7 @@ class MainWindow(QMainWindow):
         self.console_mode_box.setVisible(bool(modes))
         self.console_mode.clear()
         for mode in modes:
-            self.console_mode.addItem(mode.replace("-", " ").title(), mode)
+            self.console_mode.addItem(CONSOLE_LABELS.get(mode, mode.replace("-", " ").title()), mode)
         if modes:
             saved_mode = self.settings.value(f"consoleMode/{project.key}", modes[0], type=str)
             self.console_mode.setCurrentIndex(max(0, self.console_mode.findData(saved_mode)))
@@ -1639,7 +1737,7 @@ class MainWindow(QMainWindow):
                 self.shader_sizes.pop(project.key, None)
             if not shader_job and not startup:
                 self.states[project.key] = "Queued"
-        self.summary.setText(
+        self._set_summary(
             "Job queued" if not startup else "Measuring shader caches…" if shader_job else "Checking for updates…"
         )
         self.stop.setEnabled(True)
@@ -1700,7 +1798,7 @@ class MainWindow(QMainWindow):
         self.states[key] = state
         if state in {"Building", "Updating", "Running", "Deleting", "Checking", "Warming up"}:
             name = next(project.name for project in PROJECTS if project.key == key)
-            self.summary.setText(f"{state} {name}")
+            self._set_summary(f"{state} {name}")
         self._refresh()
 
     @Slot(str, str, str)
@@ -1710,7 +1808,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _job_complete(self, result: str):
         self._last_result = result
-        self.summary.setText(result)
+        self._set_summary(result)
         self._write_log(f"\n{result}.\n")
 
     @Slot(str, object)
@@ -1735,7 +1833,7 @@ class MainWindow(QMainWindow):
         newly_installed = [key for key in self._installing if self.library.revision(self._project(key)) is not None]
         self._installing.clear()
         if newly_installed:
-            self.summary.setText(f"{self._project(newly_installed[-1]).name} installed. It's in your library now.")
+            self._set_summary(f"{self._project(newly_installed[-1]).name} installed")
             self._select(self._project(newly_installed[-1]))
         if self._close_after_startup_check:
             self._close_after_startup_check = False
@@ -1751,6 +1849,10 @@ class MainWindow(QMainWindow):
                 return
         self._refresh()
 
+    def _set_summary(self, text: str):
+        self.summary.setText(text)
+        self.summary.setToolTip(text)
+
     @staticmethod
     def _project(key: str) -> Project:
         return next(project for project in PROJECTS if project.key == key)
@@ -1758,7 +1860,7 @@ class MainWindow(QMainWindow):
     def _stop(self):
         if self.worker is not None:
             self.stop.setEnabled(False)
-            self.summary.setText("Stopping…")
+            self._set_summary("Stopping…")
             self.worker.runner.cancel()
 
     def showEvent(self, event: QShowEvent):

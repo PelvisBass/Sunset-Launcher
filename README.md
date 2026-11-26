@@ -34,10 +34,10 @@ Keep the extracted folder together, including `_internal`. The Windows build is 
 | [hyphennn](https://github.com/fxceless/victory-fork) | ✅ Proton (experimental) | ✅ Native |
 | [DexNom Runtime](https://github.com/DexNom/VIctory) | ✅ Proton (experimental) | ✅ Native |
 | [AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX) | ✅ Proton (experimental) | ✅ Native, tested on RX 7900 XTX |
-| [Cool Fox](https://github.com/codec-d/cool_fox) | ✅ Proton (experimental) | ✅ Native |
+| [Cool Fox](https://github.com/DoubleGhosty/cool_fox) (mirror) | ✅ Proton (experimental) | ✅ Native |
 | ZTRX | ⚠️ Existing builds only | ⚠️ Existing builds only |
 
-ZTRX's upstream repository is no longer on GitHub. Existing local builds still launch, and update checks skip it. Whether a particular title runs depends on the upstream project, the build and your hardware.
+Cool Fox's original repository is offline, so the launcher builds from a mirror with the same history, and existing checkouts switch to it on their next update. ZTRX's upstream repository is no longer on GitHub. Existing local builds still launch, and update checks skip it. Whether a particular title runs depends on the upstream project, the build and your hardware.
 
 ## ✨ Features
 
@@ -46,6 +46,7 @@ ZTRX's upstream repository is no longer on GitHub. Existing local builds still l
 - **One-click updates:** track each layer's upstream commit. **Update & build all** follows the library order, which you can change by dragging.
 - **Update checks:** at startup the launcher shows **Up to date** or **Update available** for each build.
 - **Proton on Linux:** finds Steam, Flatpak, umu, Lutris and Heroic Proton builds. It prefers `umu-run`, and each project gets its own prefix.
+- **Console choice:** run a game as a Series X or Series S with one click, for every layer that supports it.
 - **Launch options:** per-project settings in the style of Steam's launch options. `VAR=value` entries set environment variables, and the remaining arguments go where each layer expects them.
 - **Shader cache:** shows each project's cache size at startup and clears it on request.
 - **Shared game path:** pick a game once and launch it with any layer.
@@ -65,8 +66,8 @@ ZTRX's upstream repository is no longer on GitHub. Existing local builds still l
 - **XCL on Linux:** stock Proton can fail before rendering. Under **Wine prefix**, select a prefix prepared with DXVK and an XCL-compatible vkd3d-proton build. Place the matching x64 `dxcompiler.dll` and `dxil.dll` from a [DXC release](https://github.com/microsoft/DirectXShaderCompiler/releases) beside `xcl.exe`.
 - **Victory and hyphennn:** some titles need a native Microsoft D3DCompiler DLL in the prefix.
 - **DexNom Runtime on Linux:** the build needs PowerShell (`pwsh`) to download and verify its format tables.
-- **AvatarManz and Cool Fox:** each comes preset with its upstream renderer settings ([AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX#how-to-run-it), [Cool Fox](https://github.com/codec-d/cool_fox#run-the-codec_d-windows-build)). Add `VAR=value` in **Launch options** to override any of them.
-- **Cool Fox** defaults to Series S. Use **Console mode** to switch to Series X with the existing build.
+- **AvatarManz and Cool Fox:** each comes preset with its upstream renderer settings ([AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX#how-to-run-it), [Cool Fox](https://github.com/DoubleGhosty/cool_fox#run-the-codec_d-windows-build)). Add `VAR=value` in **Launch options** to override any of them.
+- **Console:** pick **Series X** or **Series S** for Victory and its forks. Cool Fox defaults to Series S, the others to Series X. XCL also offers **Automatic**, which uses the game's own setting, and passes your choice as `XCL_DEVICE_TYPE`.
 - **TuxBox:** selects its own Proton through umu. Some titles need its built providers staged first. See the [Lanes example](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play).
 - **Launch argument placement:**
 

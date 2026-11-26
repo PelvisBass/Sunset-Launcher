@@ -32,7 +32,11 @@ class Recipe:
     # Shown in the Launch options field. {options} in command marks where its arguments go.
     options_hint: str = ""
     launch_env: tuple[tuple[str, str], ...] = ()
+    # Console models a run can present, default first: "auto", "series-x" or "series-s". A layer takes the
+    # choice as {console_mode} in its command, or through console_env with console_env_values per mode.
     console_modes: tuple[str, ...] = ()
+    console_env: str = ""
+    console_env_values: tuple[tuple[str, str], ...] = ()
     # Shader warm-up runs like `command`, through the same runtime and cache settings, so a launch
     # finds what it made. {game_dir} is the game's folder and {options} takes the worker count.
     warmup: tuple[str, ...] = ()
@@ -53,6 +57,8 @@ class Project:
     game_input: Literal["file", "either"]
     accent: str
     upstream_unavailable: str = ""
+    # Earlier upstream addresses. A checkout still pointing at one is moved to `repository`.
+    previous_repositories: tuple[str, ...] = ()
 
 
 # XCL passes everything after the game path to the game. It reads its own settings from the environment.
@@ -61,6 +67,12 @@ XCL_OPTIONS = "e.g. XCL_NETWORK=1 DXVK_HUD=fps · other arguments go to the game
 XCL_WINDOWS_OPTIONS = "e.g. XCL_NETWORK=1 · other arguments go to the game"
 
 # `xcl shaders --precompile` fills the DXIL cache a run reads, and --pipelines the driver's pipeline cache.
+# XCL reads the console from the title's files unless XCL_DEVICE_TYPE overrides it.
+XCL_CONSOLE = dict(
+    console_modes=("auto", "series-x", "series-s"),
+    console_env="XCL_DEVICE_TYPE",
+    console_env_values=(("series-x", "anaconda"), ("series-s", "lockhart")),
+)
 XCL_WARMUP = dict(
     warmup=("{artifact}", "shaders", "{game_dir}", "--precompile", "--pipelines"),
     warmup_jobs_env=("XCL_DXC_THREADS",),
@@ -101,6 +113,7 @@ XCL_RECIPES = {
         rust_target="x86_64-pc-windows-gnu",
         shader_cache="xcl",
         **XCL_WARMUP,
+        **XCL_CONSOLE,
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -120,13 +133,16 @@ XCL_RECIPES = {
         ),
         shader_cache="xcl",
         **XCL_WARMUP,
+        **XCL_CONSOLE,
     ),
 }
 
 
 # Victory accepts its flags anywhere and passes arguments after -- to the title.
-VICTORY_LAUNCH = ("{artifact}", "run", "{game}", "--execute", "{options}")
-VICTORY_OPTIONS = "e.g. --console series-s · put -- before arguments for the game"
+VICTORY_LAUNCH = ("{artifact}", "run", "{game}", "--console", "{console_mode}", "--execute", "{options}")
+# Victory and its forks default to Series X.
+VICTORY_CONSOLES = ("series-x", "series-s")
+VICTORY_OPTIONS = "e.g. --unimplemented zero · put -- before arguments for the game"
 
 # `victory translate --cache` is upstream's warm-up. --pipelines also fills the pipeline library.
 VICTORY_WARMUP = dict(
@@ -168,6 +184,7 @@ VICTORY_RECIPES = {
         rust_target="x86_64-pc-windows-msvc",
         shader_cache="victory",
         **VICTORY_WARMUP,
+        console_modes=VICTORY_CONSOLES,
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -184,6 +201,7 @@ VICTORY_RECIPES = {
         options_hint=VICTORY_OPTIONS,
         shader_cache="victory",
         **VICTORY_WARMUP,
+        console_modes=VICTORY_CONSOLES,
     ),
 }
 
@@ -278,7 +296,7 @@ DEXNOM_RECIPES = {
             ),
             Step((*recipe.steps[0].command, "--features", "diagnostics", "--bin", "victory"), "Build DexNom Runtime"),
         ),
-        command=("{artifact}", "run", "{game}", "--execute", "--console", "series-x", "--unimplemented", "trap", "{options}"),
+        command=("{artifact}", "run", "{game}", "--execute", "--console", "{console_mode}", "--unimplemented", "trap", "{options}"),
         launch_paths=VICTORY_LAUNCH_PATHS,
         **NO_WARMUP,
         options_hint="Put -- before arguments for the game",
@@ -327,7 +345,9 @@ AVATARMANZ_RECIPES = {
 }
 
 
-COOL_FOX_REPOSITORY = "https://github.com/codec-d/cool_fox"
+# The original codec-d/cool_fox repository is unavailable. This mirror has the same history.
+COOL_FOX_REPOSITORY = "https://github.com/DoubleGhosty/cool_fox"
+COOL_FOX_PREVIOUS = ("https://github.com/codec-d/cool_fox",)
 # Renderer settings from upstream's pareto-residency profile. RUST_LOG is a fallback for VICTORY_LOG.
 COOL_FOX_LAUNCH_ENV = (
     ("VICTORY_AMBIENT_AIR", "1.5"), ("VICTORY_TEXTURE_NO_WAIT", "1"), ("VICTORY_RELAY", "2"),
@@ -436,6 +456,7 @@ PROJECTS = (
         repository=COOL_FOX_REPOSITORY,
         setup_url=f"{COOL_FOX_REPOSITORY}#run-the-codec_d-windows-build",
         recipes=COOL_FOX_RECIPES,
+        previous_repositories=COOL_FOX_PREVIOUS,
         game_input="file",
         accent="#fbc590",
     ),

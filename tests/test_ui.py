@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from PySide6.QtCore import QEventLoop, QSettings, QTimer
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QMessageBox, QWidget
 
 from sunset_launcher.__main__ import apply_theme
 from sunset_launcher.backend import Library, OperationError, UpdateCheck, recipe_for
@@ -104,10 +104,13 @@ class DesktopTests(unittest.TestCase):
                 window.show()
                 self.app.processEvents()
                 detail = window.findChild(QFrame, "detail")
-                natural = detail.heightForWidth(detail.width()) if detail.hasHeightForWidth() else detail.sizeHint().height()
+                self.app.processEvents()
+                # Not stretched to the taller list, and nothing inside clipped.
+                lowest = max(child.geometry().bottom() for child in detail.findChildren(QWidget)
+                             if child.parent() is detail and child.isVisible())
                 self.assertEqual(detail.y(), window.project_list.y())
-                self.assertEqual(detail.height(), natural)
                 self.assertLess(detail.height(), window.project_list.height())
+                self.assertLessEqual(lowest, detail.height())
             finally:
                 window.close()
 
@@ -141,8 +144,10 @@ class DesktopTests(unittest.TestCase):
             for saved_mode in ("series-s", "series-x"):
                 window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
                 try:
+                    # Victory has a console choice too, defaulting to Series X. Cool Fox defaults to Series S.
                     window.rows["victory"].click()
-                    self.assertTrue(window.console_mode_box.isHidden())
+                    self.assertFalse(window.console_mode_box.isHidden())
+                    self.assertEqual(window.console_mode.currentData(), "series-x")
                     window.rows["cool_fox"].click()
                     self.assertFalse(window.console_mode_box.isHidden())
                     self.assertEqual(window.console_mode.currentData(), saved_mode)
@@ -157,6 +162,39 @@ class DesktopTests(unittest.TestCase):
                     self.assertEqual(begin.call_args.args[0].console_mode, "series-x")
                 finally:
                     window.close()
+
+    def test_console_toggle_behaves_like_a_selector(self):
+        from sunset_launcher.ui import SegmentedControl
+
+        control = SegmentedControl()
+        chosen = []
+        control.activated.connect(chosen.append)
+        for text, data in (("Automatic", "auto"), ("Series X", "series-x"), ("Series S", "series-s")):
+            control.addItem(text, data)
+        self.assertEqual((control.count(), control.currentData()), (3, "auto"))
+        control.setCurrentIndex(control.findData("series-s"))
+        self.assertEqual(control.currentData(), "series-s")
+        self.assertEqual(chosen, [])  # Only a click reports a choice, as with QComboBox.activated.
+        control._group.button(1).click()
+        self.assertEqual((chosen, control.currentData()), ([1], "series-x"))
+        control.clear()
+        control.addItem("Series S", "series-s")
+        self.assertEqual((control.count(), control.currentData(), control.findData("auto")), (1, "series-s", -1))
+        self.assertEqual(len(control.findChildren(QWidget)), 1)
+
+    @patch.object(Library, "revision", lambda self, project: "a" * 40)  # Every layer installed
+    def test_console_toggle_gets_its_full_height_after_switching_layers(self):
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.show()
+                self.app.processEvents()
+                for key in ("cool_fox", "xcl", "victory"):
+                    window.rows[key].click()
+                    self.app.processEvents()
+                    self.assertGreaterEqual(window.console_mode.height(), window.console_mode.sizeHint().height(), key)
+            finally:
+                window.close()
 
     def test_shared_game_path_migrates_an_executable_and_remembers_clear(self):
         with TemporaryDirectory() as directory:

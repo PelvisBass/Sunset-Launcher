@@ -117,16 +117,33 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(expand_command(recipe_for_host("tuxbox", "linux").warmup, values),
                          ["python", "tuxbox.py", "run", "--prepare-only", "Game.exe"])
 
+    def test_cool_fox_uses_the_mirror_and_moves_old_checkouts(self):
+        cool_fox = next(project for project in PROJECTS if project.key == "cool_fox")
+        self.assertEqual(cool_fox.repository, "https://github.com/DoubleGhosty/cool_fox")
+        self.assertIn("https://github.com/codec-d/cool_fox", cool_fox.previous_repositories)
+        self.assertTrue(cool_fox.setup_url.startswith(cool_fox.repository))
+
+    def test_console_choices_per_layer(self):
+        modes = {project.key: {recipe.console_modes for recipe in project.recipes.values()} for project in PROJECTS}
+        self.assertEqual(modes["xcl"], {("auto", "series-x", "series-s")})
+        self.assertEqual(modes["cool_fox"], {("series-s", "series-x")})
+        self.assertEqual(modes["tuxbox"], {()})
+        for key in ("victory", "hyphennn", "ztrx", "dexnom", "avatarmanz"):
+            self.assertEqual(modes[key], {("series-x", "series-s")}, key)
+        xcl = recipe_for_host("xcl", "windows")
+        self.assertEqual((xcl.console_env, dict(xcl.console_env_values)),
+                         ("XCL_DEVICE_TYPE", {"series-x": "anaconda", "series-s": "lockhart"}))
+
     def test_launch_arguments_go_where_each_layer_reads_them(self):
         values = {"artifact": "layer.exe", "game": "Game.exe", "venv_python": "python", "console_mode": "series-s"}
         options = ["--flag", "value"]
         expected = {
             "xcl": ["layer.exe", "run", "Game.exe", "--flag", "value"],
-            "victory": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
-            "hyphennn": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
-            "ztrx": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
-            "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-x", "--unimplemented", "trap", "--flag", "value"],
-            "avatarmanz": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
+            "victory": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
+            "hyphennn": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
+            "ztrx": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
+            "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-s", "--unimplemented", "trap", "--flag", "value"],
+            "avatarmanz": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "cool_fox": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "tuxbox": ["python", "tuxbox.py", "run", "--flag", "value", "Game.exe"],
         }
@@ -348,6 +365,37 @@ class LibraryTests(unittest.TestCase):
                                                       for host in self.project.recipes})
         with self.assertRaisesRegex(OperationError, "Build this project"):
             self.library.warm_up(self.project, str(self.game), None, Runner(self.output.append))
+
+    def test_console_mode_reaches_a_layer_through_its_environment(self):
+        self.build()
+        recipe = next(iter(self.project.recipes.values()))
+        probe = "import os; print('device', os.environ.get('PROBE_DEVICE', 'unset'))"
+        self.project = replace(self.project, recipes={host: replace(
+            recipe, command=("{python}", "-c", probe, "{options}"), console_modes=("auto", "series-x", "series-s"),
+            console_env="PROBE_DEVICE", console_env_values=(("series-x", "anaconda"), ("series-s", "lockhart")),
+        ) for host in self.project.recipes})
+        runner = Runner(self.output.append)
+        for mode, expected in (("auto", "unset"), ("series-s", "lockhart"), ("series-x", "anaconda")):
+            self.output.clear()
+            self.library.launch(self.project, str(self.game), None, runner, console_mode=mode)
+            self.assertIn(f"device {expected}\n", self.output, mode)
+        # A VAR=value launch option still wins over the selector.
+        self.output.clear()
+        self.library.launch(self.project, str(self.game), None, runner, console_mode="series-s",
+                            options="PROBE_DEVICE=custom")
+        self.assertIn("device custom\n", self.output)
+
+    def test_a_checkout_of_a_moved_upstream_follows_it(self):
+        self.build()
+        source = self.library.source(self.project)
+        self.git(source, "remote", "set-url", "origin", "https://example.invalid/old/fixture.git")
+        runner = Runner(self.output.append)
+        with self.assertRaisesRegex(OperationError, "origin differs"):
+            self.library.check_update(self.project, runner)
+        self.project = replace(self.project, previous_repositories=("https://example.invalid/old/fixture",))
+        self.assertEqual(self.library.check_update(self.project, runner).status, "Up to date")
+        self.assertEqual(self.git(source, "config", "--get", "remote.origin.url"), self.project.repository)
+        self.assertTrue(any("moved to" in line for line in self.output))
 
     def test_check_reports_new_upstream_commit_without_fetching_or_rebuilding(self):
         first = self.build()

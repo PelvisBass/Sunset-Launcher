@@ -79,7 +79,7 @@ QPushButton[nav="true"] {
 }
 QPushButton[nav="true"]:hover { background: #2b2033; }
 QPushButton[nav="true"]:checked { background: #35243b; color: #ffb6d2; border-color: #4e314b; }
-QPushButton[nav="true"]:focus { border-color: #f6a6cb; }
+QPushButton[nav="true"]:focus:!checked { border-color: #3d2c45; }
 QPushButton[projectRow="true"] {
     background: #201925;
     border: 1px solid #382b40;
@@ -94,7 +94,18 @@ QPushButton[projectRow="true"]:focus { border-color: #ffc0da; }
 QLabel#dragGrip { color: #a18aa9; font-size: 17px; }
 QFrame#dropMarker { background: #ffc0da; border-radius: 1px; }
 QLineEdit, QComboBox { background: #19131f; }
-QComboBox { padding-right: 22px; }
+QComboBox { padding-right: 30px; }
+/* Fusion draws a square, darker arrow box that pokes out of the rounded field. Draw a flush one instead. */
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: center right;
+    width: 28px;
+    border: 0;
+    background: transparent;
+}
+QComboBox::down-arrow { image: url("@CHEVRON@"); width: 10px; height: 6px; }
+QComboBox::down-arrow:disabled { image: none; }
+QComboBox QAbstractItemView { padding: 4px; outline: 0; }
 QComboBox QAbstractItemView, QMenu {
     background: #2b2033;
     border: 1px solid #5a3d5b;
@@ -146,5 +157,28 @@ QCheckBox::indicator {
     border-radius: 4px;
     background: #19131f;
 }
-QCheckBox::indicator:checked { background: #f48fbd; border-color: #f998bc; }
+QCheckBox::indicator:checked { background: #f48fbd; border-color: #f998bc; image: url("@CHECK@"); }
 QCheckBox:focus { color: #ffc0da; }
+QLabel#section {
+    color: #c9a3bd;
+    font-size: 11px;
+    font-weight: 750;
+    letter-spacing: 1px;
+}
+QPushButton[link="true"] { padding: 4px 6px; font-size: 12px; min-height: 16px; }
+QPushButton[danger="true"] { color: #f0a6a6; }
+QPushButton[danger="true"]:hover { background: #3a2229; }
+QPushButton[danger="true"]:disabled { color: #87758c; }
+QPushButton[segment="true"] {
+    background: #19131f;
+    color: #c9b8cf;
+    border-radius: 0;
+    padding: 6px 14px;
+    min-width: 54px;
+}
+QPushButton[segment="true"][position="first"] { border-top-left-radius: 7px; border-bottom-left-radius: 7px; }
+QPushButton[segment="true"][position="last"] { border-top-right-radius: 7px; border-bottom-right-radius: 7px; border-left: 0; }
+QPushButton[segment="true"][position="middle"] { border-left: 0; }
+QPushButton[segment="true"][position="only"] { border-radius: 7px; }
+QPushButton[segment="true"]:checked { background: #4a2f48; color: #ffd2e6; border-color: #a86591; }
+QPushButton[segment="true"]:hover:!checked { background: #2a2032; }
