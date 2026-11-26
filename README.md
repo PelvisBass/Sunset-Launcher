@@ -32,10 +32,12 @@ Keep the extracted folder together, including `_internal`. The Windows build is 
 | [Victory](https://github.com/Marvisak/VIctory) | ✅ Proton (experimental) | ✅ Native |
 | [TuxBox](https://github.com/brcly/TuxBox) | ✅ Managed by TuxBox | — Linux only |
 | [hyphennn](https://github.com/fxceless/victory-fork) | ✅ Proton (experimental) | ✅ Native |
-| [ZTRX](https://github.com/Zettrox/ztrx) | ✅ Proton (experimental) | ✅ Native, NVIDIA RTX |
 | [DexNom Runtime](https://github.com/DexNom/VIctory) | ✅ Proton (experimental) | ✅ Native |
+| [AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX) | ✅ Proton (experimental) | ✅ Native, tested on RX 7900 XTX |
+| [Cool Fox](https://github.com/codec-d/cool_fox) | ✅ Proton (experimental) | ✅ Native, Series S preset |
+| ZTRX | ⚠️ Existing builds only | ⚠️ Existing builds only |
 
-Whether a particular title runs depends on the upstream project, the build and your hardware.
+ZTRX's upstream repository is no longer on GitHub. Existing local builds still launch, and update checks skip it. Whether a particular title runs depends on the upstream project, the build and your hardware.
 
 ## ✨ Features
 
@@ -61,13 +63,14 @@ Whether a particular title runs depends on the upstream project, the build and y
 - **XCL on Linux:** stock Proton can fail before rendering. Under **Wine prefix**, select a prefix prepared with DXVK and an XCL-compatible vkd3d-proton build. Place the matching x64 `dxcompiler.dll` and `dxil.dll` from a [DXC release](https://github.com/microsoft/DirectXShaderCompiler/releases) beside `xcl.exe`.
 - **Victory and hyphennn:** some titles need a native Microsoft D3DCompiler DLL in the prefix.
 - **DexNom Runtime on Linux:** the build needs PowerShell (`pwsh`) to download and verify its format tables.
+- **AvatarManz and Cool Fox:** each comes preset with its upstream renderer settings ([AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX#how-to-run-it), [Cool Fox](https://github.com/codec-d/cool_fox#run-the-codec_d-windows-build)). Add `VAR=value` in **Launch options** to override any of them.
 - **TuxBox:** selects its own Proton through umu. Some titles need its built providers staged first. See the [Lanes example](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play).
 - **Launch argument placement:**
 
   | Layer | Where launch arguments go |
   | --- | --- |
   | XCL | To the game |
-  | Victory, hyphennn, ZTRX, DexNom Runtime | To the layer. Arguments after `--` go to the game |
+  | Victory and its forks | To the layer. Arguments after `--` go to the game |
   | TuxBox | To the layer |
 
 - **Build tools in the data folder:** on Linux, tools placed under `build-tools/` in the data folder are picked up. These include Cargo and Rustup, MinGW-w64, DXC and the cargo-xwin SDK cache.
