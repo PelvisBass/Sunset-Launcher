@@ -61,7 +61,7 @@ class DesktopTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertNotIn("tuxbox", window.rows)
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["xcl", "victory", "hyphennn", "ztrx", "dexnom"])
+                                 ["xcl", "victory", "hyphennn", "ztrx", "dexnom", "avatarmanz", "cool_fox"])
                 for key, row in window.rows.items():
                     row.click()
                     self.assertTrue(window.runtime_box.isHidden(), key)
@@ -158,23 +158,35 @@ class DesktopTests(unittest.TestCase):
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["victory", "xcl", "tuxbox", "hyphennn", "ztrx", "dexnom"])
+                                 ["victory", "xcl", "tuxbox", "hyphennn", "ztrx", "dexnom", "avatarmanz", "cool_fox"])
                 window.project_list.move_row(window.rows["ztrx"], 0)
-                window.project_list.move_row(window.rows["victory"], 6)
+                window.project_list.move_row(window.rows["victory"], len(window.rows))
                 self.assertEqual(window.selected.key, "xcl")
             finally:
                 window.close()
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 projects = window.project_list.projects()
-                self.assertEqual([project.key for project in projects], ["ztrx", "xcl", "tuxbox", "hyphennn", "dexnom", "victory"])
+                self.assertEqual([project.key for project in projects],
+                                 ["ztrx", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "cool_fox", "victory"])
                 with patch.object(window, "_start") as start:
                     window.update_all.click()
-                    supported = tuple(project for project in projects if recipe_for(project))
-                    if supported:
-                        start.assert_called_once_with(supported, "update")
-                    else:
-                        start.assert_not_called()
+                    start.assert_called_once_with(projects[1:], "update")
+            finally:
+                window.close()
+
+    def test_ztrx_can_launch_an_existing_build_without_its_upstream(self):
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+            try:
+                with patch.object(window.library, "revision", side_effect=lambda project: "a" * 40 if project.key == "ztrx" else None):
+                    window.rows["ztrx"].click()
+                    window.game.setText(str(Path(directory) / "game.exe"))
+                    self.assertEqual(window.rows["ztrx"].status.text(), "Upstream unavailable")
+                    self.assertFalse(window.repository.isEnabled())
+                    self.assertFalse(window.update.isEnabled())
+                    self.assertFalse(window.check_updates.isEnabled())
+                    self.assertTrue(window.launch.isEnabled())
             finally:
                 window.close()
 

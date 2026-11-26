@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock, Timer
@@ -374,6 +375,8 @@ class Library:
         return None
 
     def check_update(self, project: Project, runner: Runner) -> UpdateCheck:
+        if project.upstream_unavailable:
+            raise OperationError(project.upstream_unavailable)
         built = self.revision(project)
         if built is None:
             raise OperationError("Build this project before checking for updates.")
@@ -491,12 +494,14 @@ class Library:
 
     def build(self, project: Project, update: bool, runner: Runner) -> str:
         recipe = self._require_recipe(project)
+        source = self.source(project)
+        if project.upstream_unavailable and (update or not (source / ".git").exists()):
+            raise OperationError(project.upstream_unavailable)
         env = self._build_environment()
         self._check_tools(project, recipe, env)
         values = self._values(project, recipe)
         steps = [(step, expand_command(step.command, values)) for step in recipe.steps]
 
-        source = self.source(project)
         source.parent.mkdir(parents=True, exist_ok=True)
         def git(*args: str, capture: bool = False) -> str:
             return runner.run(("git", *args), source, env=env, capture=capture)
@@ -546,29 +551,72 @@ class Library:
         companion_before = {
             name: self._build_file(source / name) for name in recipe.companion_outputs
         }
-        record.unlink(missing_ok=True)
         artifact = self._artifact(project, recipe)
-        artifact.unlink(missing_ok=True)
-        for step, command in steps:
-            runner.output(f"\n{step.label}\n")
-            runner.run(command, Path(step.working_directory.format_map(values)), env=env)
+        with self._preserve_offline_build(project, artifact, record):
+            record.unlink(missing_ok=True)
+            artifact.unlink(missing_ok=True)
+            for step, command in steps:
+                runner.output(f"\n{step.label}\n")
+                runner.run(command, Path(step.working_directory.format_map(values)), env=env)
 
-        if self._build_file(artifact) is None:
-            raise OperationError(f"The build did not produce {recipe.artifact}. The upstream build layout may have changed.")
-        revision = git("rev-parse", "HEAD", capture=True)
-        outputs = {recipe.artifact: self._digest(artifact)}
-        for name, before in companion_before.items():
-            path = source / name
-            after = self._build_file(path)
-            if after is not None and (before is None or after.st_mtime_ns != before.st_mtime_ns or after.st_ino != before.st_ino):
-                outputs[name] = self._digest(path)
-        runner.check_cancelled()
-        temporary = record.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps({"revision": revision, "artifact": recipe.artifact, "outputs": outputs}), encoding="utf-8",
-        )
-        temporary.replace(record)
+            if self._build_file(artifact) is None:
+                raise OperationError(f"The build did not produce {recipe.artifact}. The upstream build layout may have changed.")
+            revision = git("rev-parse", "HEAD", capture=True)
+            outputs = {recipe.artifact: self._digest(artifact)}
+            for name, before in companion_before.items():
+                path = source / name
+                after = self._build_file(path)
+                if after is not None and (before is None or after.st_mtime_ns != before.st_mtime_ns or after.st_ino != before.st_ino):
+                    outputs[name] = self._digest(path)
+            runner.check_cancelled()
+            temporary = record.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps({"revision": revision, "artifact": recipe.artifact, "outputs": outputs}), encoding="utf-8",
+            )
+            temporary.replace(record)
         return revision
+
+    @contextmanager
+    def _preserve_offline_build(self, project: Project, artifact: Path, record: Path):
+        if not project.upstream_unavailable:
+            yield
+            return
+        artifact_info = self._build_file(artifact)
+        record_info = self._build_file(record)
+        if artifact_info is None or record_info is None or self.revision(project) is None:
+            yield
+            return
+
+        # Cargo can hard-link its executable to another output. Keep an independent copy.
+        folder = Path(tempfile.mkdtemp(prefix=".build-backup-", dir=record.parent))
+        saved_artifact = folder / "artifact"
+        saved_record = folder / "build.json"
+        keep_backup = False
+        try:
+            shutil.copy2(artifact, saved_artifact)
+            shutil.copy2(record, saved_record)
+            try:
+                yield
+            except BaseException:
+                keep_backup = True
+                try:
+                    if artifact.parent.resolve() != artifact.parent.absolute():
+                        raise OSError(f"The output folder was redirected: {artifact.parent}")
+                    artifact.parent.mkdir(parents=True, exist_ok=True)
+                    saved_artifact.replace(artifact)
+                    # Keep legacy timestamp-based deletion working for an unchanged executable.
+                    if max(artifact_info.st_mtime_ns, artifact_info.st_ctime_ns) <= record_info.st_mtime_ns:
+                        os.utime(saved_record, ns=(
+                            record_info.st_atime_ns, max(record_info.st_mtime_ns, artifact.stat().st_ctime_ns),
+                        ))
+                    saved_record.replace(record)
+                except (OSError, RuntimeError) as error:
+                    raise OperationError(f"Could not restore the previous build. Backup files are in {folder}: {error}") from error
+                keep_backup = False
+                raise
+        finally:
+            if not keep_backup:
+                shutil.rmtree(folder, ignore_errors=True)
 
     def shader_usage(self, project: Project, runner: Runner) -> int:
         recipe = self._require_recipe(project)
@@ -632,6 +680,10 @@ class Library:
         if recipe.shader_cache:
             env = os.environ.copy() if env is None else env
             configure_shader_cache(recipe, self.project_dir(project), env)
+        if recipe.launch_env:
+            env = os.environ.copy() if env is None else env
+            for key, value in recipe.launch_env:
+                env.setdefault(key, value)
         if option_env:
             # The user's settings win over recipe defaults such as WINEDLLOVERRIDES.
             env = os.environ.copy() if env is None else env

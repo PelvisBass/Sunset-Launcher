@@ -31,6 +31,7 @@ class Recipe:
     shader_cache: Literal["xcl", "victory", "tuxbox"] | None = None
     # Shown in the Launch options field. {options} in command marks where its arguments go.
     options_hint: str = ""
+    launch_env: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class Project:
     recipes: dict[str, Recipe]
     game_input: Literal["file", "either"]
     accent: str
+    upstream_unavailable: str = ""
 
 
 # XCL passes everything after the game path to the game. It reads its own settings from the environment.
@@ -207,19 +209,19 @@ TUXBOX_RECIPES = {
 
 
 ZTRX_REPOSITORY = "https://github.com/Zettrox/ztrx"
-ZTRX_LAUNCH_PATHS = (("VICTORY_CACHE_DIR", "cache"), ("VICTORY_DATA_DIR", "data"))
+VICTORY_LAUNCH_PATHS = (("VICTORY_CACHE_DIR", "cache"), ("VICTORY_DATA_DIR", "data"))
 ZTRX_RECIPES = {
     "linux": replace(
         VICTORY_RECIPES["linux"],
         steps=(replace(VICTORY_RECIPES["linux"].steps[0], label="Cross-compile ZTRX for Windows"),),
-        launch_paths=ZTRX_LAUNCH_PATHS,
+        launch_paths=VICTORY_LAUNCH_PATHS,
         launch_note="Proton launch is experimental. Upstream documents Windows with an NVIDIA RTX GPU.",
         launch_url=f"{ZTRX_REPOSITORY}#requirements",
     ),
     "windows": replace(
         VICTORY_RECIPES["windows"],
         steps=(replace(VICTORY_RECIPES["windows"].steps[0], label="Build ZTRX for Windows"),),
-        launch_paths=ZTRX_LAUNCH_PATHS,
+        launch_paths=VICTORY_LAUNCH_PATHS,
         launch_note="Upstream requires an AVX2 CPU and an NVIDIA RTX 20-series or newer GPU.",
         launch_url=f"{ZTRX_REPOSITORY}#requirements",
     ),
@@ -239,7 +241,7 @@ DEXNOM_RECIPES = {
             Step((*recipe.steps[0].command, "--features", "diagnostics", "--bin", "victory"), "Build DexNom Runtime"),
         ),
         command=("{artifact}", "run", "{game}", "--execute", "--console", "series-x", "--unimplemented", "trap", "{options}"),
-        launch_paths=ZTRX_LAUNCH_PATHS,
+        launch_paths=VICTORY_LAUNCH_PATHS,
         options_hint="Put -- before arguments for the game",
         requirements=(*recipe.requirements, "Install PowerShell (pwsh) to initialize the format tables.")
         if host == "linux" else recipe.requirements,
@@ -250,6 +252,66 @@ DEXNOM_RECIPES = {
         ("linux", VICTORY_RECIPES["linux"], "pwsh", ()),
         ("windows", VICTORY_RECIPES["windows"], "powershell.exe", ("-ExecutionPolicy", "RemoteSigned")),
     )
+}
+
+
+AVATARMANZ_REPOSITORY = "https://github.com/avatarmanz/VIctory-7900XTX"
+# Standard profile from the fork's scripts/play.ps1. Launch options can override these settings.
+AVATARMANZ_LAUNCH_ENV = (
+    ("VICTORY_TEXTURE_NO_WAIT", "1"), ("VICTORY_RELAY", "2"), ("VICTORY_WIDE_BACK", "1"),
+    ("VICTORY_CARD_REHASH_RUNS", "1"), ("VICTORY_JOIN_COPIES", "1"), ("VICTORY_INDIRECT_WINDOW", "1"),
+    ("VICTORY_RELAY_COPY", "1"), ("VICTORY_CARD_STEPS", "2"), ("VICTORY_INDIRECT_BATCH", "2"),
+    ("VICTORY_MAP_THREADS", "1"), ("VICTORY_TITLE_PRIORITIES", "0"), ("VICTORY_CARD_AWAKE", "1"),
+    ("VICTORY_SHOW_AFTER", "1"), ("VICTORY_AMBIENT", "0.8"), ("VICTORY_D3D12_DRED", "light"),
+    ("VICTORY_SKIP_PIPELINES", "none"), ("VICTORY_THIN", "1"), ("VICTORY_JOIN_PARTS", "8"),
+    ("VICTORY_UPLOAD_AHEAD", "1"),
+)
+AVATARMANZ_BUILD = ("--locked", "--profile", "diag", "--target-dir", "target", "-p", "victory",
+                    "--features", "diagnostics", "--bin", "victory")
+AVATARMANZ_RECIPES = {
+    host: replace(
+        VICTORY_RECIPES[host],
+        steps=(Step((*command, *AVATARMANZ_BUILD), "Build AvatarManz"),),
+        artifact=VICTORY_RECIPES[host].artifact.replace("/release/", "/diag/"),
+        launch_paths=VICTORY_LAUNCH_PATHS,
+        launch_env=AVATARMANZ_LAUNCH_ENV,
+        launch_note=(
+            "Proton launch is experimental. Upstream tests on Windows with a Radeon RX 7900 XTX."
+            if host == "linux" else "Upstream tests on a Radeon RX 7900 XTX."
+        ),
+    )
+    for host, command in (
+        ("linux", ("cargo", "xwin", "build", "--target", "x86_64-pc-windows-msvc")),
+        ("windows", ("cargo", "build")),
+    )
+}
+
+
+COOL_FOX_REPOSITORY = "https://github.com/codec-d/cool_fox"
+# Renderer settings from upstream's pareto-residency profile. RUST_LOG is a fallback for VICTORY_LOG.
+COOL_FOX_LAUNCH_ENV = (
+    ("VICTORY_AMBIENT_AIR", "1.5"), ("VICTORY_TEXTURE_NO_WAIT", "1"), ("VICTORY_RELAY", "2"),
+    ("VICTORY_WIDE_BACK", "1"), ("VICTORY_CARD_REHASH_RUNS", "1"), ("VICTORY_JOIN_COPIES", "1"),
+    ("VICTORY_INDIRECT_WINDOW", "1"), ("VICTORY_RELAY_COPY", "1"), ("VICTORY_CARD_STEPS", "2"),
+    ("VICTORY_INDIRECT_BATCH", "2"), ("VICTORY_MAP_THREADS", "1"), ("VICTORY_CARD_AWAKE", "1"),
+    ("VICTORY_SHOW_AFTER", "1"), ("VICTORY_AMBIENT", "0.8"), ("VICTORY_THIN", "1"),
+    ("VICTORY_JOIN_PARTS", "8"), ("VICTORY_UPLOAD_AHEAD", "1"), ("VICTORY_LEVELS_ON_DEMAND", "1"),
+    ("VICTORY_CARD_BUFFERS_MIN_KB", "64"), ("RUST_LOG", "warn"),
+)
+COOL_FOX_RECIPES = {
+    host: replace(
+        recipe,
+        steps=(replace(recipe.steps[0], label="Build Cool Fox"),),
+        command=("{artifact}", "run", "{game}", "--console", "series-s", "--execute", "{options}"),
+        launch_paths=VICTORY_LAUNCH_PATHS,
+        launch_env=COOL_FOX_LAUNCH_ENV,
+        options_hint="Series S preset · put -- before arguments for the game",
+        launch_note=(
+            "Uses the upstream pareto-residency settings. Proton launch is experimental."
+            if host == "linux" else "Uses the upstream pareto-residency settings."
+        ),
+    )
+    for host, recipe in VICTORY_RECIPES.items()
 }
 
 
@@ -303,6 +365,7 @@ PROJECTS = (
         recipes=ZTRX_RECIPES,
         game_input="file",
         accent="#f1cd86",
+        upstream_unavailable="The original ZTRX repository is unavailable on GitHub. Existing local builds can still launch.",
     ),
     Project(
         key="dexnom",
@@ -313,5 +376,25 @@ PROJECTS = (
         recipes=DEXNOM_RECIPES,
         game_input="file",
         accent="#fa9690",
+    ),
+    Project(
+        key="avatarmanz",
+        name="AvatarManz",
+        description="Victory fork tuned for the AMD Radeon RX 7900 XTX.",
+        repository=AVATARMANZ_REPOSITORY,
+        setup_url=f"{AVATARMANZ_REPOSITORY}#how-to-run-it",
+        recipes=AVATARMANZ_RECIPES,
+        game_input="file",
+        accent="#aed3fc",
+    ),
+    Project(
+        key="cool_fox",
+        name="Cool Fox",
+        description="Victory fork with graphics and memory residency tuning.",
+        repository=COOL_FOX_REPOSITORY,
+        setup_url=f"{COOL_FOX_REPOSITORY}#run-the-codec_d-windows-build",
+        recipes=COOL_FOX_RECIPES,
+        game_input="file",
+        accent="#fbc590",
     ),
 )

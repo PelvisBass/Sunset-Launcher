@@ -39,12 +39,13 @@ class RecipeTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(
                 [recipe_for(project).runtime for project in PROJECTS],
-                ["proton", "proton", "managed", "proton", "proton", "proton"],
+                ["proton", "proton", "managed", "proton", "proton", "proton", "proton", "proton"],
             )
         with patch.object(sys, "platform", "win32"):
             self.assertEqual(
                 {project.key: recipe_for(project) and recipe_for(project).runtime for project in PROJECTS},
-                {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native", "ztrx": "native", "dexnom": "native"},
+                {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native",
+                 "ztrx": "native", "dexnom": "native", "avatarmanz": "native", "cool_fox": "native"},
             )
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
@@ -88,6 +89,8 @@ class RecipeTests(unittest.TestCase):
             "hyphennn": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
             "ztrx": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
             "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-x", "--unimplemented", "trap", "--flag", "value"],
+            "avatarmanz": ["layer.exe", "run", "Game.exe", "--execute", "--flag", "value"],
+            "cool_fox": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "tuxbox": ["python", "tuxbox.py", "run", "--flag", "value", "Game.exe"],
         }
         for project in PROJECTS:
@@ -96,6 +99,17 @@ class RecipeTests(unittest.TestCase):
                     self.assertTrue(recipe.options_hint)
                     self.assertEqual(expand_command(recipe.command, values, options), expected[project.key])
                     self.assertNotIn("{options}", expand_command(recipe.command, values))
+
+    def test_cool_fox_uses_upstream_release_profile_and_isolated_cache(self):
+        project = next(project for project in PROJECTS if project.key == "cool_fox")
+        for host, target in (("linux", "x86_64-pc-windows-msvc/"), ("windows", "")):
+            with self.subTest(host=host):
+                recipe = project.recipes[host]
+                self.assertEqual(recipe.artifact, f"target/{target}release/victory.exe")
+                self.assertIn("--release", recipe.steps[0].command)
+                self.assertIn("--locked", recipe.steps[0].command)
+                self.assertEqual(dict(recipe.launch_env)["VICTORY_CARD_BUFFERS_MIN_KB"], "64")
+                self.assertEqual(dict(recipe.launch_paths), {"VICTORY_CACHE_DIR": "cache", "VICTORY_DATA_DIR": "data"})
 
 
 class BundleHostTests(unittest.TestCase):
@@ -235,9 +249,14 @@ class LibraryTests(unittest.TestCase):
         probe = "import os, sys; print('probe', sys.argv[1:], os.environ.get('SUNSET_OPTION'))"
         self.project = replace(
             self.project,
-            recipes={host: replace(recipe, command=("{python}", "-c", probe, "{options}", "{game}"))
+            recipes={host: replace(recipe, command=("{python}", "-c", probe, "{options}", "{game}"),
+                                   launch_env=(("SUNSET_OPTION", "recipe default"),))
                      for host in self.project.recipes},
         )
+        with patch.dict(os.environ):
+            os.environ.pop("SUNSET_OPTION", None)
+            self.library.launch(self.project, str(self.game), None, Runner(self.output.append))
+        self.assertIn(f"probe {[str(self.game)]!r} recipe default\n", self.output)
         self.library.launch(
             self.project, str(self.game), None, Runner(self.output.append),
             options="SUNSET_OPTION='two words' --fast 'quoted arg'",
@@ -280,6 +299,52 @@ class LibraryTests(unittest.TestCase):
         with self.assertRaisesRegex(OperationError, "git exited"):
             self.library.check_update(self.project, runner)
         self.assertEqual(self.library.revision(self.project), next_revision)
+
+    def test_catalogued_unavailable_upstream_preserves_local_building_and_launch(self):
+        original = self.build()
+        self.origin.rename(self.origin.with_name("unavailable"))
+        self.project = replace(self.project, upstream_unavailable="The original repository is unavailable.")
+        runner = Runner(self.output.append)
+        with self.assertRaisesRegex(OperationError, "original repository is unavailable"):
+            self.library.check_update(self.project, runner)
+        with self.assertRaisesRegex(OperationError, "original repository is unavailable"):
+            self.library.build(self.project, True, runner)
+        self.assertEqual(self.build(), original)
+        self.library.launch(self.project, str(self.game), None, runner)
+        self.assertIn(f"initial {self.game}\n", self.output)
+
+    def test_unsuccessful_offline_rebuild_restores_the_previous_executable_and_record(self):
+        original = self.build()
+        self.origin.rename(self.origin.with_name("unavailable"))
+        self.project = replace(self.project, upstream_unavailable="The original repository is unavailable.")
+        source = self.library.source(self.project)
+        artifact = source / "artifact.py"
+        record = source.parent / "build.json"
+        original_artifact = artifact.read_bytes()
+        original_record = record.read_bytes()
+        host, recipe = next(iter(self.project.recipes.items()))
+
+        for ending, expected in (("raise SystemExit(7)", OperationError), ("print('cancel')", backend.Cancelled)):
+            with self.subTest(ending=ending):
+                script = f"from pathlib import Path; Path('artifact.py').write_text('incomplete'); {ending}"
+                steps = (Step(("{python}", "-c", script), "Replace the fixture executable"),)
+                project = replace(self.project, recipes={host: replace(recipe, steps=steps)})
+
+                def output(line):
+                    self.output.append(line)
+                    if line == "cancel\n":
+                        runner.cancel()
+
+                runner = Runner(output)
+                with self.assertRaises(expected):
+                    self.library.build(project, False, runner)
+                self.assertEqual(artifact.read_bytes(), original_artifact)
+                self.assertEqual(record.read_bytes(), original_record)
+                self.assertEqual(self.library.revision(project), original)
+                self.assertFalse(list(source.parent.glob(".build-backup-*")))
+
+        self.library.launch(self.project, str(self.game), None, Runner(self.output.append))
+        self.assertIn(f"initial {self.game}\n", self.output)
 
     def test_delete_generated_files_keeps_checkout_game_and_modified_outputs(self):
         with (self.origin / "build.py").open("a", encoding="utf-8") as build:

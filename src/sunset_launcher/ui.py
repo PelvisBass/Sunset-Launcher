@@ -240,6 +240,7 @@ class ProjectRow(QPushButton):
             "Updating": "#ffb895", "Running": "#f7a7ce", "Queued": "#dfbae9",
             "Needs setup": "#ffcf9a", "Up to date": "#9ce1ce", "Update available": "#ffcf9a",
             "Checking": "#dfbae9", "Upstream diverged": "#ffafa8", "Check unavailable": "#ffafa8",
+            "Upstream unavailable": "#ffcf9a",
         }.get(status, "#bbb0c6")
         self.status.setStyleSheet(f"color: {color};")
         self.setAccessibleDescription(f"{runtime}, {status}")
@@ -558,10 +559,8 @@ class MainWindow(QMainWindow):
         self.check_updates.clicked.connect(self._check_for_updates)
         header.addWidget(self.check_updates)
         self.update_all = button("Update && build all")
-        self.update_all.setToolTip("Clone missing projects, then fetch and build each supported project.")
-        self.update_all.clicked.connect(lambda: self._start(
-            tuple(project for project in self.project_list.projects() if recipe_for(project)), "update",
-        ))
+        self.update_all.setToolTip("Clone missing projects and update projects with an available upstream.")
+        self.update_all.clicked.connect(lambda: self._start(self._updatable_projects(), "update"))
         header.addWidget(self.update_all)
         layout.addLayout(header)
 
@@ -611,13 +610,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.description)
         sources = QHBoxLayout()
         sources.setSpacing(0)
-        source = button("Repository ↗", quiet=True)
-        source.clicked.connect(lambda: open_url(QUrl(self.selected.repository)))
+        self.repository = button("Repository ↗", quiet=True)
+        self.repository.clicked.connect(lambda: open_url(QUrl(self.selected.repository)))
         self.checkout = button("Build folder", quiet=True)
         self.checkout.clicked.connect(lambda: self._open_folder(self.library.source(self.selected)))
         setup = button("Build setup", quiet=True)
         setup.clicked.connect(self._show_setup)
-        sources.addWidget(source)
+        sources.addWidget(self.repository)
         sources.addWidget(setup)
         sources.addWidget(self.checkout)
         sources.addStretch()
@@ -744,9 +743,11 @@ class MainWindow(QMainWindow):
         recipe = recipe_for(project)
         uses_proton = recipe is not None and recipe.runtime == "proton"
         self.runtime_box.setVisible(uses_proton)
-        note = recipe.launch_note if recipe is not None else ""
+        note = "\n\n".join(filter(None, (project.upstream_unavailable, recipe.launch_note if recipe else "")))
         self.note.setText(note)
         self.note.setVisible(bool(note))
+        self.repository.setEnabled(not project.upstream_unavailable)
+        self.repository.setToolTip(project.upstream_unavailable)
         self._restore_proton()
         self.launch_options.setText(self.settings.value(f"launchOptions/{project.key}", "", type=str))
         self.launch_options.setPlaceholderText(recipe.options_hint if recipe is not None else "")
@@ -764,11 +765,11 @@ class MainWindow(QMainWindow):
         for project in self.project_list.projects():
             revision = self.library.revision(project)
             recipe = recipe_for(project)
-            update_status, detail = self.update_checks.get(project.key, ("Ready", ""))
-            status = self.states.get(project.key) or (
-                "Unsupported" if recipe is None else update_status if revision else "Not built"
-            )
-            update_detail = f"Built commit {revision}\n{detail}" if revision and detail else ""
+            update_status, detail = self.update_checks.get(project.key, ("Ready", "")) if revision else ("Not built", "")
+            if project.upstream_unavailable:
+                update_status, detail = "Upstream unavailable", project.upstream_unavailable
+            status = self.states.get(project.key) or ("Unsupported" if recipe is None else update_status)
+            update_detail = f"Built commit {revision}\n{detail}" if revision and detail else detail
             self.rows[project.key].update_status(status, self._runtime_name(project), update_detail)
         revision = self.library.revision(self.selected)
         self.revision.setText(f"Commit {revision[:7]}" if revision else "")
@@ -796,10 +797,17 @@ class MainWindow(QMainWindow):
         proton = self._chosen_proton()
         has_game = bool(self.game.text().strip())
         ready = self.library.revision(self.selected) is not None
-        self.update_all.setEnabled(can_start_job and any(recipe_for(project) for project in self.project_list.projects()))
+        upstream_unavailable = self.selected.upstream_unavailable
+        has_checkout = (self.library.source(self.selected) / ".git").exists()
+        self.update_all.setEnabled(can_start_job and bool(self._updatable_projects()))
         self.check_updates.setEnabled(self.thread is None and bool(self._built_projects()))
-        self.build.setEnabled(can_start_job and recipe is not None)
-        self.update.setEnabled(can_start_job and recipe is not None and self.library.source(self.selected).is_dir())
+        self.build.setEnabled(can_start_job and recipe is not None and (not upstream_unavailable or has_checkout))
+        self.build.setToolTip(
+            "Compile the existing local checkout." if upstream_unavailable and has_checkout
+            else upstream_unavailable or "Clone on first build, then compile the local checkout."
+        )
+        self.update.setEnabled(can_start_job and recipe is not None and not upstream_unavailable and has_checkout)
+        self.update.setToolTip(upstream_unavailable or "Fetch upstream changes, fast-forward the checkout, then compile.")
         self.delete.setEnabled(can_start_job and recipe is not None and self.library.has_build_record(self.selected))
         cache_supported = recipe is not None and recipe.shader_cache is not None
         cache_size = self.shader_sizes.get(self.selected.key)
@@ -861,8 +869,14 @@ class MainWindow(QMainWindow):
         self.settings.setValue("projectOrder", [project.key for project in self.project_list.projects()])
         self.settings.sync()
 
+    def _updatable_projects(self) -> tuple[Project, ...]:
+        return tuple(
+            project for project in self.project_list.projects()
+            if recipe_for(project) is not None and not project.upstream_unavailable
+        )
+
     def _built_projects(self) -> tuple[Project, ...]:
-        return tuple(project for project in self.project_list.projects() if self.library.revision(project))
+        return tuple(project for project in self._updatable_projects() if self.library.revision(project))
 
     def _check_for_updates(self):
         self._start(self._built_projects(), "check")
@@ -1035,13 +1049,15 @@ class MainWindow(QMainWindow):
         else:
             instructions.extend(recipe.requirements)
         box.setInformativeText("\n\n".join(instructions))
-        guide = box.addButton("Open upstream guide", QMessageBox.ButtonRole.ActionRole)
+        guide = None
         title_guide = None
-        if recipe is not None and recipe.launch_url:
-            title_guide = box.addButton("Open launch guide", QMessageBox.ButtonRole.ActionRole)
+        if not project.upstream_unavailable:
+            guide = box.addButton("Open upstream guide", QMessageBox.ButtonRole.ActionRole)
+            if recipe is not None and recipe.launch_url:
+                title_guide = box.addButton("Open launch guide", QMessageBox.ButtonRole.ActionRole)
         box.addButton(QMessageBox.StandardButton.Close)
         box.exec()
-        if box.clickedButton() is guide:
+        if guide is not None and box.clickedButton() is guide:
             open_url(QUrl(project.setup_url))
         elif recipe is not None and title_guide is not None and box.clickedButton() is title_guide:
             open_url(QUrl(recipe.launch_url))

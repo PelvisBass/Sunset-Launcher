@@ -183,5 +183,30 @@ jobs:
         run: |
           sha256sum --check SHA256SUMS
           sha256sum SunsetLauncher-linux-x86_64.tar.gz SunsetLauncher-windows-x86_64.zip > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
-            SunsetLauncher-linux-x86_64.tar.gz SunsetLauncher-windows-x86_64.zip SHA256SUMS
+          tag="$GITHUB_REF_NAME"
+          if ! gh release view "$tag" --json isDraft >/dev/null 2>&1; then
+            gh release create "$tag" --draft --verify-tag --generate-notes
+          fi
+          draft=$(gh release view "$tag" --json isDraft --jq .isDraft)
+          if [[ $draft == false ]]; then
+            echo "Release $tag is already published."
+            exit 0
+          fi
+          [[ $draft == true ]]
+          for asset in SunsetLauncher-linux-x86_64.tar.gz SunsetLauncher-windows-x86_64.zip SHA256SUMS; do
+            digest=$(sha256sum "$asset")
+            digest="sha256:${digest%% *}"
+            filter=".assets[] | select(.name == \"$asset\" and .state == \"uploaded\") | .digest"
+            if [[ $(gh release view "$tag" --json assets --jq "$filter") == "$digest" ]]; then
+              continue
+            fi
+            # GitHub can report a duplicate after receiving an upload. Confirm the stored checksum.
+            if ! gh release upload "$tag" "$asset"; then
+              echo "Checking the stored copy of $asset after an upload error."
+            fi
+            if [[ $(gh release view "$tag" --json assets --jq "$filter") != "$digest" ]]; then
+              echo "Could not verify $asset in the draft release."
+              exit 1
+            fi
+          done
+          gh release edit "$tag" --draft=false

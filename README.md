@@ -2,7 +2,7 @@
 
 Build the standalone launcher with `uv run --locked --extra bundle python scripts/build_bundle.py`. To run from source on Linux or Windows, use `uv run --locked sunset-launcher`.
 
-Sunset Launcher is a desktop app for building, updating and launching XCL, Victory, TuxBox, hyphennn, ZTRX and DexNom Runtime. Its project catalog supports x86-64 Linux and Windows. TuxBox targets Linux, so the Windows launcher lists only XCL, Victory, hyphennn, ZTRX and DexNom Runtime.
+Sunset Launcher is a desktop app for building, updating and launching Xbox Series compatibility layers on x86-64 Linux and Windows. The library includes XCL, Victory, TuxBox, hyphennn, ZTRX, DexNom Runtime, AvatarManz and Cool Fox. TuxBox appears on Linux.
 
 ## Build from source
 
@@ -65,7 +65,7 @@ The tests use local Git and Proton fixtures. They cover upstream commit checks, 
 
 1. Install Git, then select a project and open **Build setup** for its toolchain instructions. The launcher runs tools from your PATH.
 2. Select **Build** to clone and compile a project. The launcher compares built commits with their upstream branches on startup. Use **Check for updates** to check again. **Update & build** fetches upstream changes, fast-forwards the checkout and compiles. Drag projects to change the order used by **Update & build all**.
-3. Set **Shared game path** once. Select an executable to use it across all projects. XCL and TuxBox also accept a folder. On Linux, choose a **Proton version** for XCL, Victory, hyphennn, ZTRX or DexNom Runtime, then select **Launch**. Use **Add Proton** to point to a custom installation's executable `proton` script. Each project remembers its Proton selection and uses a separate compatibility prefix. Use **Launch options** to pass extra settings, as with Steam's launch options. Leading `VAR=value` entries set environment variables, such as `XCL_NETWORK=1` or `DXVK_HUD=fps`, and the rest go to the layer in the position it expects. XCL passes its extra arguments to the game. Victory, hyphennn, ZTRX and DexNom Runtime pass arguments after `--` to the game. Each project keeps its own launch options.
+3. Set **Shared game path** once. Select an executable to use it across all projects. XCL and TuxBox also accept a folder. On Linux, choose a **Proton version** when the selected project shows that control, then select **Launch**. Use **Add Proton** to point to a custom installation's executable `proton` script. Each project remembers its Proton selection and uses a separate compatibility prefix. Use **Launch options** to pass extra settings, as with Steam's launch options. Leading `VAR=value` entries set environment variables, such as `XCL_NETWORK=1` or `DXVK_HUD=fps`. XCL passes extra arguments to the game directly. Victory and its forks pass arguments after `--` to the game. Each project keeps its own launch options.
 
 Select **Delete build…** to remove a project's recorded executable and any recorded companion binaries, then build it again when needed. Deletion keeps the checkout, compiler caches, manually added files, game files, saves and Proton prefixes. Builds made by earlier launcher versions record only the main executable.
 
@@ -83,14 +83,19 @@ Use **Open data folder** to find the checkouts, build artifacts, preferences and
 | Victory | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
 | [TuxBox](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md) | Upstream Python build and runner, which use Proton Experimental through umu | Not listed. Use the upstream project directly |
 | [hyphennn](https://github.com/fxceless/victory-fork) | Rust, LLVM and cargo-xwin build, then selected Proton | Rust MSVC build and native launch |
-| [ZTRX](https://github.com/Zettrox/ztrx) | Rust, LLVM and cargo-xwin build, with experimental Proton launch | Rust MSVC build and native launch on supported NVIDIA hardware |
+| ZTRX | Existing local builds can launch through Proton. Upstream unavailable | Existing local builds can launch natively. Upstream unavailable |
 | [DexNom Runtime](https://github.com/DexNom/VIctory) | Rust, LLVM, cargo-xwin and PowerShell build, with experimental Proton launch | Rust MSVC build and native launch |
+| [AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX) | Rust, LLVM and cargo-xwin build, with experimental Proton launch | Rust MSVC build using the upstream diagnostic profile, then native launch |
+| [Cool Fox](https://github.com/codec-d/cool_fox) | Rust, LLVM and cargo-xwin build, with experimental Proton launch | Rust MSVC build and native launch |
 
 - Steam's bundled tools and additional library folders are scanned along with common custom tool locations and Steam Flatpak's user data. Flatpak-only Proton extensions may need a host-accessible Proton installation.
 - For out-of-Steam Proton launches, the launcher prefers `umu-run` when installed. It can fall back to the selected Proton build's matching local Steam Linux Runtime and then to direct Proton. Install Proton through Steam or your preferred tool and use **Rescan Steam** to refresh the list. umu may fetch its runtime on first launch. [umu documentation](https://github.com/Open-Wine-Components/umu-launcher#how-do-i-use-it)
 - XCL on Linux is experimental. Stock Proton may fail before rendering. If you have a dedicated Wine prefix configured with DXVK and XCL-compatible vkd3d-proton, select it under **Wine prefix** and choose the Proton version used to prepare it. Place the matching x64 `dxcompiler.dll` and `dxil.dll` from a Microsoft DXC release beside `xcl.exe` in the build folder. [Microsoft DXC releases](https://github.com/microsoft/DirectXShaderCompiler/releases)
 - Victory and hyphennn have experimental Linux compatibility. Some titles may need a native Microsoft D3DCompiler DLL in the compatibility prefix.
 - DexNom Runtime builds from its default Git branch. The build initializes the format tables with the upstream checksum verification script.
+- AvatarManz builds from its default Git branch and uses the upstream play script's standard settings. **Launch options** can override them. The upstream project tests with an AMD Radeon RX 7900 XTX. [AvatarManz setup](https://github.com/avatarmanz/VIctory-7900XTX#how-to-run-it)
+- Cool Fox builds from its default Git branch and uses the upstream Series S pareto-residency settings with **Shared game path**. **Launch options** can override the environment settings. [Cool Fox setup](https://github.com/codec-d/cool_fox#run-the-codec_d-windows-build)
+- ZTRX's original repository is unavailable on GitHub. The launcher skips it during update checks and **Update & build all**. **Build** can still compile an existing checkout.
 - Some TuxBox titles need the built providers staged in a working copy. The upstream runner selects its own Proton on Linux. Use the upstream Lanes homebrew example to check your setup. [TuxBox Lanes example](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play)
 
 Compatibility, including whether a particular title runs, depends on the upstream project, build and hardware.
