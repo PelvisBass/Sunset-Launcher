@@ -583,7 +583,8 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.project_list, 5, Qt.AlignmentFlag.AlignTop)
         detail = self._details()
         detail.setMinimumWidth(365)
-        grid.addWidget(detail, 6)
+        # Keep the panel at its natural height when the project list is taller.
+        grid.addWidget(detail, 6, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(grid)
         layout.addStretch()
 
