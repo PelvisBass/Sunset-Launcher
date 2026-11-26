@@ -11,9 +11,9 @@ from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtWidgets import QApplication
 
 from sunset_launcher.__main__ import apply_theme
-from sunset_launcher.backend import Library, WarmupProgress, recipe_for
+from sunset_launcher.backend import Library, OperationError, WarmupProgress, recipe_for
 from sunset_launcher.catalog import PROJECTS
-from sunset_launcher.sysinfo import process_group_memory
+from sunset_launcher.sysinfo import process_tree_memory
 from sunset_launcher.ui import INSTALL_PAGE, LIBRARY_PAGE, WARMUP_PAGE, MainWindow
 from sunset_launcher.warmup import WarmupTracker, format_bytes, format_duration
 
@@ -68,20 +68,22 @@ class TrackerTests(unittest.TestCase):
 
 
 class MemoryTests(unittest.TestCase):
-    def test_process_group_memory_sums_the_warm_up_group(self):
+    def test_process_tree_memory_follows_every_descendant(self):
         page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
         with TemporaryDirectory() as directory, patch.object(sys, "platform", "linux"), \
                 patch("sunset_launcher.sysinfo.os.sysconf", return_value=page, create=True):
             proc = Path(directory)
-            # pid, command (with spaces and parentheses), state, ppid, pgrp, then resident pages in statm.
-            for pid, name, group, pages in ((41, "victory.exe", 41, 100), (42, "dxc (worker) 2", 41, 50),
-                                            (77, "other", 77, 999)):
+            # umu-run (41) starts the runtime container (42) in its own session, which starts Wine and the
+            # layer (43). Process 77 is unrelated. Command names can contain spaces and parentheses.
+            for pid, name, parent, session, pages in ((41, "umu-run", 1, 41, 100), (42, "pv-adverb (x)", 41, 42, 20),
+                                                      (43, "victory.exe", 42, 42, 900), (77, "other", 1, 77, 999)):
                 (proc / str(pid)).mkdir()
-                (proc / str(pid) / "stat").write_text(f"{pid} ({name}) S 1 {group} {group} 0 -1 4194560\n")
+                (proc / str(pid) / "stat").write_text(f"{pid} ({name}) S {parent} {session} {session} 0 -1 4194560\n")
                 (proc / str(pid) / "statm").write_text(f"5000 {pages} 30 1 0 400 0\n")
             (proc / "self").mkdir()
-            self.assertEqual(process_group_memory(41, proc), 150 * page)
-            self.assertIsNone(process_group_memory(12, proc))
+            self.assertEqual(process_tree_memory(41, proc), 1020 * page)
+            self.assertEqual(process_tree_memory(43, proc), 900 * page)
+            self.assertIsNone(process_tree_memory(12, proc))
 
 
 class PageTests(unittest.TestCase):
@@ -189,6 +191,31 @@ class PageTests(unittest.TestCase):
             self.assertEqual(window.warm_button.text(), "Warm up")
             self.assertFalse(window._needs_warmup(project, str(game)))
             self.assertIn("Warmed up for this game", window.warm_stage.text())
+
+    def test_a_failed_warm_up_leaves_the_build_status_alone(self):
+        project = next(item for item in PROJECTS if item.key == "xcl")
+
+        def warm_up(library, item, raw_game, proton, runner, **settings):
+            raise OperationError("victory.exe exited with code 3.")
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(Library, "revision", lambda library, item: "c" * 40 if item.key == "xcl" else None),
+            patch.object(Library, "warm_up", warm_up),
+            patch.object(sys, "platform", "win32"),
+        ):
+            game = Path(directory) / "Game.exe"
+            game.touch()
+            window = self.window(directory)
+            window.game.setText(str(game))
+            window.update_checks["xcl"] = ("Up to date", "")
+            window._open_warmup(project)
+            window.warm_button.click()
+            self.wait_for(lambda: window.thread is None)
+            self.app.processEvents()
+            self.assertEqual(window.warm_title.text(), "Warm-up did not finish")
+            self.assertEqual(window.rows["xcl"].status.text(), "Up to date")
+            self.assertTrue(window._needs_warmup(project, str(game)))
 
     def test_launch_warms_up_first_only_after_a_change(self):
         project = next(item for item in PROJECTS if item.key == "xcl")

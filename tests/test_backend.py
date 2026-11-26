@@ -44,13 +44,13 @@ class RecipeTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(
                 [recipe_for(project).runtime for project in PROJECTS],
-                ["proton", "proton", "managed", "proton", "proton", "proton", "proton", "proton"],
+                ["proton", "proton", "managed", "proton", "proton", "proton", "proton"],
             )
         with patch.object(sys, "platform", "win32"):
             self.assertEqual(
                 {project.key: recipe_for(project) and recipe_for(project).runtime for project in PROJECTS},
                 {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native",
-                 "ztrx": "native", "dexnom": "native", "avatarmanz": "native", "cool_fox": "native"},
+                 "dexnom": "native", "avatarmanz": "native", "cool_fox": "native"},
             )
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
@@ -113,7 +113,7 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(expand_command(recipe_for_host("xcl", "linux").warmup, values),
                          ["layer.exe", "shaders", "Games", "--precompile", "--pipelines"])
         self.assertEqual(expand_command(recipe_for_host("victory", "windows").warmup, values, ["--jobs", "4"]),
-                         ["layer.exe", "translate", "Games", "--cache", "--pipelines", "--jobs", "4"])
+                         ["layer.exe", "translate", "Games", "--cache", "--jobs", "4"])
         self.assertEqual(expand_command(recipe_for_host("tuxbox", "linux").warmup, values),
                          ["python", "tuxbox.py", "run", "--prepare-only", "Game.exe"])
 
@@ -128,7 +128,7 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(modes["xcl"], {("auto", "series-x", "series-s")})
         self.assertEqual(modes["cool_fox"], {("series-s", "series-x")})
         self.assertEqual(modes["tuxbox"], {()})
-        for key in ("victory", "hyphennn", "ztrx", "dexnom", "avatarmanz"):
+        for key in ("victory", "hyphennn", "dexnom", "avatarmanz"):
             self.assertEqual(modes[key], {("series-x", "series-s")}, key)
         xcl = recipe_for_host("xcl", "windows")
         self.assertEqual((xcl.console_env, dict(xcl.console_env_values)),
@@ -141,7 +141,6 @@ class RecipeTests(unittest.TestCase):
             "xcl": ["layer.exe", "run", "Game.exe", "--flag", "value"],
             "victory": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "hyphennn": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
-            "ztrx": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-s", "--unimplemented", "trap", "--flag", "value"],
             "avatarmanz": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "cool_fox": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
@@ -356,6 +355,37 @@ class LibraryTests(unittest.TestCase):
         # The game's folder and the worker count reach the warm-up. The game's own arguments do not.
         self.assertEqual(arguments, [str(self.game.parent), "--jobs", "3"])
         self.assertEqual(environment, {"LAYER_DEFAULT": "on", "USER_SETTING": "fast", "PROBE_JOBS": "3"})
+
+    def test_proton_warm_up_keeps_its_output_and_graphics_overrides(self):
+        revision = self.build()
+        recipe = next(iter(self.project.recipes.values()))
+        self.project = replace(self.project, recipes={host: replace(
+            recipe, runtime="proton", warmup=("{artifact}", "shaders", "{game_dir}"),
+        ) for host in self.project.recipes})
+        launches = []
+
+        def proton_launch(install, executable, args, prefix, **settings):
+            launches.append(settings)
+            return [sys.executable, "-c", "print('progress \\x1b[32mline\\x1b[0m')"], {"PATH": os.environ.get("PATH", "")}
+
+        runs = []
+        original_run = Runner.run
+
+        def run(runner, command, cwd, *, env=None, **settings):
+            runs.append(env)
+            return original_run(runner, command, cwd, env=env, **settings)
+
+        install = backend.ProtonInstall("Fixture", self.root / "proton")
+        with patch.object(backend, "proton_launch", proton_launch), patch.object(Runner, "run", run):
+            warmed = self.library.warm_up(
+                self.project, str(self.game), install, Runner(self.output.append),
+                options="WINEDLLOVERRIDES=d3dcompiler_47=n,b",
+            )
+        self.assertEqual(warmed, revision)
+        self.assertEqual(launches[0]["verb"], "runinprefix")
+        self.assertEqual(runs[0]["WINEDLLOVERRIDES"], f"{backend.PROTON_GRAPHICS_OVERRIDES};d3dcompiler_47=n,b")
+        # The layer's colour codes are stripped before its output reaches the log.
+        self.assertIn("progress line\n", self.output)
 
     def test_warm_up_needs_a_build_and_a_warm_up_command(self):
         with self.assertRaisesRegex(OperationError, "no shader warm-up"):

@@ -144,9 +144,10 @@ VICTORY_LAUNCH = ("{artifact}", "run", "{game}", "--console", "{console_mode}", 
 VICTORY_CONSOLES = ("series-x", "series-s")
 VICTORY_OPTIONS = "e.g. --unimplemented zero · put -- before arguments for the game"
 
-# `victory translate --cache` is upstream's warm-up. --pipelines also fills the pipeline library.
+# `victory translate --cache` is upstream's warm-up. Its --pipelines step is left out: under Proton
+# it has no pipeline library to keep pipelines in, and it aborts with exit code 3.
 VICTORY_WARMUP = dict(
-    warmup=("{artifact}", "translate", "{game_dir}", "--cache", "--pipelines", "{options}"),
+    warmup=("{artifact}", "translate", "{game_dir}", "--cache", "{options}"),
     warmup_jobs_arg="--jobs",
     warmup_progress="file",
 )
@@ -262,26 +263,7 @@ TUXBOX_RECIPES = {
 }
 
 
-ZTRX_REPOSITORY = "https://github.com/Zettrox/ztrx"
 VICTORY_LAUNCH_PATHS = (("VICTORY_CACHE_DIR", "cache"), ("VICTORY_DATA_DIR", "data"))
-ZTRX_RECIPES = {
-    "linux": replace(
-        VICTORY_RECIPES["linux"],
-        steps=(replace(VICTORY_RECIPES["linux"].steps[0], label="Cross-compile ZTRX for Windows"),),
-        launch_paths=VICTORY_LAUNCH_PATHS,
-        **NO_WARMUP,
-        launch_note="Proton launch is experimental. Upstream documents Windows with an NVIDIA RTX GPU.",
-        launch_url=f"{ZTRX_REPOSITORY}#requirements",
-    ),
-    "windows": replace(
-        VICTORY_RECIPES["windows"],
-        steps=(replace(VICTORY_RECIPES["windows"].steps[0], label="Build ZTRX for Windows"),),
-        launch_paths=VICTORY_LAUNCH_PATHS,
-        **NO_WARMUP,
-        launch_note="Upstream requires an AVX2 CPU and an NVIDIA RTX 20-series or newer GPU.",
-        launch_url=f"{ZTRX_REPOSITORY}#requirements",
-    ),
-}
 
 
 DEXNOM_REPOSITORY = "https://github.com/DexNom/VIctory"
@@ -417,17 +399,6 @@ PROJECTS = (
         recipes={host: replace(recipe, **NO_WARMUP) for host, recipe in VICTORY_RECIPES.items()},
         game_input="file",
         accent="#b9a3f8",
-    ),
-    Project(
-        key="ztrx",
-        name="ZTRX",
-        description="Victory-based Xbox Series compatibility layer focused on NVIDIA graphics.",
-        repository=ZTRX_REPOSITORY,
-        setup_url=f"{ZTRX_REPOSITORY}#build",
-        recipes=ZTRX_RECIPES,
-        game_input="file",
-        accent="#f1cd86",
-        upstream_unavailable="The original ZTRX repository is unavailable on GitHub. Existing local builds can still launch.",
     ),
     Project(
         key="dexnom",

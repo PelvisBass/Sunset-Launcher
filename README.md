@@ -35,9 +35,8 @@ Keep the extracted folder together, including `_internal`. The Windows build is 
 | [DexNom Runtime](https://github.com/DexNom/VIctory) | ✅ Proton (experimental) | ✅ Native |
 | [AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX) | ✅ Proton (experimental) | ✅ Native, tested on RX 7900 XTX |
 | [Cool Fox](https://github.com/DoubleGhosty/cool_fox) (mirror) | ✅ Proton (experimental) | ✅ Native |
-| ZTRX | ⚠️ Existing builds only | ⚠️ Existing builds only |
 
-Cool Fox's original repository is offline, so the launcher builds from a mirror with the same history, and existing checkouts switch to it on their next update. ZTRX's upstream repository is no longer on GitHub. Existing local builds still launch, and update checks skip it. Whether a particular title runs depends on the upstream project, the build and your hardware.
+Cool Fox's original repository is offline, so the launcher builds from a mirror with the same history, and existing checkouts switch to it on their next update. Whether a particular title runs depends on the upstream project, the build and your hardware.
 
 ## ✨ Features
 
@@ -78,7 +77,7 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
   | TuxBox | To the layer |
 
 - **Build tools in the data folder:** on Linux, tools placed under `build-tools/` in the data folder are picked up. These include Cargo and Rustup, MinGW-w64, DXC and the cargo-xwin SDK cache.
-- **Warm-up progress:** XCL reports overall progress and time left. Victory works through the game's files one at a time, so its percentage and time left are for the current file. AvatarManz and Cool Fox report a running count without a total. TuxBox prepares shaders with its own per-title profiles and reports no counts. hyphennn, ZTRX and DexNom Runtime have no warm-up the launcher can run.
+- **Warm-up progress:** XCL reports overall progress and time left. Victory works through the game's files one at a time, so its percentage and time left are for the current file. AvatarManz and Cool Fox report a running count without a total. TuxBox prepares shaders with its own per-title profiles and reports no counts. hyphennn and DexNom Runtime have no warm-up the launcher can run. On Linux, the warm-up runs through Proton's `runinprefix` so its progress reaches the launcher. Victory's warm-up translates shaders only: its pipeline pre-build has nowhere to keep pipelines under Proton and stops the run.
 - **Parallel compiles:** each compile can hold over a gigabyte of RAM in the driver. Lower **Parallel compiles** on the Warm-up page if free RAM runs low.
 - **Delete build…** removes only recorded build outputs and moves the layer back to **Install**. Checkouts, caches, saves, game files and prefixes stay.
 - **Open data folder** holds the checkouts, preferences and logs.

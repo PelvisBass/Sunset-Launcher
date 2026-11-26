@@ -247,8 +247,13 @@ def proton_launch(
     *,
     game_path: Path | None = None,
     tool_path: str | None = None,
+    verb: str = "run",
 ) -> tuple[list[str], dict[str, str]]:
-    """Return argv and environment for running a Windows build on Linux."""
+    """Return argv and environment for running a Windows build on Linux.
+
+    `run` starts a game through Proton's steam.exe, which does not pass the console on.
+    `runinprefix` runs the program directly in the same prefix, so its output reaches the launcher.
+    """
     if not proton_supported():
         raise ValueError("Proton launches are available on Linux.")
     if not _is_executable(install.executable):
@@ -290,14 +295,14 @@ def proton_launch(
     umu = shutil.which("umu-run", path=tool_path)
     if umu and install.executable.name == "proton" and manifest.is_file():
         env.update(WINEPREFIX=str(prefix), PROTONPATH=str(proton_dir), GAMEID="umu-default", STORE="")
-        env["PROTON_VERB"] = "run"
+        env["PROTON_VERB"] = verb
         return [umu, str(executable), *args], env
 
-    command = [str(install.executable), "run", str(executable), *args]
+    command = [str(install.executable), verb, str(executable), *args]
     tool_paths = [str(proton_dir)]
     if runtime_id and (runtime := _runtime_entry(runtime_id, libraries)):
         tool_paths.append(str(runtime.parent))
-        command = [str(runtime), "--verb=run", "--", *command]
+        command = [str(runtime), f"--verb={verb}", "--", *command]
     env["STEAM_COMPAT_TOOL_PATHS"] = os.pathsep.join(tool_paths)
     env["STEAM_COMPAT_MOUNTS"] = env["STEAM_COMPAT_TOOL_PATHS"]
     return command, env

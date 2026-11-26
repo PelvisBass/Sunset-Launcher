@@ -42,28 +42,39 @@ def available_memory() -> int | None:
     return None
 
 
-def process_group_memory(group: int, proc: Path = Path("/proc")) -> int | None:
-    """Resident bytes of every process in a Linux process group, or None where unsupported.
+def process_tree_memory(root: int, proc: Path = Path("/proc")) -> int | None:
+    """Resident bytes of a Linux process and all its descendants, or None where unsupported.
 
-    Runner starts each command in a new session, so its process ID is also the group ID and
-    the group covers the warm-up's compiler workers. Proton's shared wineserver can sit outside it.
+    A Proton warm-up runs umu, then the Steam Linux Runtime container, then Wine and the layer.
+    The container starts its own session, so the whole tree is followed rather than one process group.
     """
     if not sys.platform.startswith("linux") or not proc.is_dir():
         return None
     page = os.sysconf("SC_PAGE_SIZE")
-    total = 0
-    found = False
+    children: dict[int, list[int]] = {}
     for entry in proc.iterdir():
         if not entry.name.isdigit():
             continue
         try:
             stat = (entry / "stat").read_text(encoding="ascii", errors="replace")
             # The command name can contain spaces and parentheses, so read the fields after its last ")".
-            fields = stat[stat.rindex(")") + 2:].split()
-            if int(fields[2]) != group:
-                continue
-            total += int((entry / "statm").read_text(encoding="ascii").split()[1]) * page
-            found = True
+            parent = int(stat[stat.rindex(")") + 2:].split()[1])
         except (OSError, ValueError, IndexError):
             continue
+        children.setdefault(parent, []).append(int(entry.name))
+    total = 0
+    found = False
+    pending = [root]
+    seen: set[int] = set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        try:
+            total += int((proc / str(pid) / "statm").read_text(encoding="ascii").split()[1]) * page
+            found = True
+        except (OSError, ValueError, IndexError):
+            pass
+        pending.extend(children.get(pid, ()))
     return total if found else None

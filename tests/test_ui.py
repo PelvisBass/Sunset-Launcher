@@ -62,7 +62,7 @@ class DesktopTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertNotIn("tuxbox", window.rows)
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["xcl", "victory", "hyphennn", "ztrx", "dexnom", "avatarmanz", "cool_fox"])
+                                 ["xcl", "victory", "hyphennn", "dexnom", "avatarmanz", "cool_fox"])
                 for key, row in window.rows.items():
                     row.click()
                     self.assertTrue(window.runtime_box.isHidden(), key)
@@ -109,8 +109,9 @@ class DesktopTests(unittest.TestCase):
                 lowest = max(child.geometry().bottom() for child in detail.findChildren(QWidget)
                              if child.parent() is detail and child.isVisible())
                 self.assertEqual(detail.y(), window.project_list.y())
-                self.assertLess(detail.height(), window.project_list.height())
                 self.assertLessEqual(lowest, detail.height())
+                # Only the panel's own bottom margin below its last control: it isn't stretched.
+                self.assertLess(detail.height() - lowest, 30)
             finally:
                 window.close()
 
@@ -240,8 +241,8 @@ class DesktopTests(unittest.TestCase):
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["victory", "xcl", "tuxbox", "hyphennn", "ztrx", "dexnom", "avatarmanz", "cool_fox"])
-                window.project_list.move_row(window.rows["ztrx"], 0)
+                                 ["victory", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "cool_fox"])
+                window.project_list.move_row(window.rows["cool_fox"], 0)
                 window.project_list.move_row(window.rows["victory"], len(window.rows))
                 self.assertEqual(window.selected.key, "xcl")
             finally:
@@ -250,21 +251,27 @@ class DesktopTests(unittest.TestCase):
             try:
                 projects = window.project_list.projects()
                 self.assertEqual([project.key for project in projects],
-                                 ["ztrx", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "cool_fox", "victory"])
+                                 ["cool_fox", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "victory"])
                 with patch.object(window, "_start") as start:
                     window.update_all.click()
-                    start.assert_called_once_with(projects[1:], "update")
+                    start.assert_called_once_with(projects, "update")
             finally:
                 window.close()
 
-    def test_ztrx_can_launch_an_existing_build_without_its_upstream(self):
-        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+    def test_a_layer_without_its_upstream_can_still_launch_an_existing_build(self):
+        from dataclasses import replace
+
+        import sunset_launcher.ui as ui
+
+        gone = tuple(replace(project, upstream_unavailable="Gone from GitHub.") if project.key == "victory" else project
+                     for project in ui.PROJECTS)
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"), patch.object(ui, "PROJECTS", gone):
             window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
             try:
-                with patch.object(window.library, "revision", side_effect=lambda project: "a" * 40 if project.key == "ztrx" else None):
-                    window.rows["ztrx"].click()
+                with patch.object(window.library, "revision", side_effect=lambda project: "a" * 40 if project.key == "victory" else None):
+                    window.rows["victory"].click()
                     window.game.setText(str(Path(directory) / "game.exe"))
-                    self.assertEqual(window.rows["ztrx"].status.text(), "Upstream unavailable")
+                    self.assertEqual(window.rows["victory"].status.text(), "Upstream unavailable")
                     self.assertFalse(window.repository.isEnabled())
                     self.assertFalse(window.update.isEnabled())
                     self.assertFalse(window.check_updates.isEnabled())

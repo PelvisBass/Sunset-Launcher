@@ -36,6 +36,12 @@ class Cancelled(OperationError):
     pass
 
 
+# The graphics DLLs Proton's prefix setup selects for a game: DXVK and vkd3d-proton, else Wine's own.
+PROTON_GRAPHICS_OVERRIDES = "d3d12,d3d12core,dxgi,d3d11,d3d10core,d3d9=n,b"
+# Colour and cursor codes some layers' logs print. The activity log shows plain text.
+_TERMINAL_CODES = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
 @dataclass(frozen=True)
 class WarmupProgress:
     done: int
@@ -290,6 +296,7 @@ class Runner:
             assert process.stdout is not None
             with process.stdout:
                 for line in process.stdout:
+                    line = _TERMINAL_CODES.sub("", line)
                     self.output(line)
                     if capture:
                         captured.append(line)
@@ -698,6 +705,7 @@ class Library:
         self, project: Project, recipe: Recipe, template: Sequence[str], game: Path,
         proton: ProtonInstall | None, runner: Runner, *, prepared_prefix: Path | None, options: str,
         console_mode: str | None, extra_args: Sequence[str] | None = None, extra_env: dict[str, str] | None = None,
+        proton_verb: str = "run",
     ) -> tuple[list[str], dict[str, str] | None, Path]:
         """Build a launch-style command with the runtime, cache and setting environment a launch uses."""
         option_env, option_args = parse_launch_options(options)
@@ -730,7 +738,7 @@ class Library:
             else:
                 command, env = proton_launch(
                     proton, Path(command[0]), command[1:], self.prefix(project), game_path=game,
-                    tool_path=host_environment().get("PATH"),
+                    tool_path=host_environment().get("PATH"), verb=proton_verb,
                 )
         if recipe.launch_paths:
             env = os.environ.copy() if env is None else env
@@ -791,9 +799,17 @@ class Library:
             if recipe.warmup_jobs_arg:
                 extra_args = [recipe.warmup_jobs_arg, str(jobs)]
             extra_env = {name: str(jobs) for name in recipe.warmup_jobs_env}
+        if recipe.runtime == "proton":
+            # Proton's run verb loses the program's console output, and with it the progress.
+            # runinprefix keeps it but skips the prefix setup that selects DXVK and vkd3d-proton.
+            extra_env = {"WINEDLLOVERRIDES": PROTON_GRAPHICS_OVERRIDES, **extra_env}
         command, env, cwd = self._invocation(
             project, recipe, recipe.warmup, game, proton, runner, prepared_prefix=prepared_prefix,
             options=options, console_mode=console_mode, extra_args=extra_args, extra_env=extra_env,
+            proton_verb="runinprefix",
         )
+        if env is not None and (user := dict(parse_launch_options(options)[0]).get("WINEDLLOVERRIDES")):
+            # Keep both the graphics overrides and the user's own, such as d3dcompiler_47=n,b.
+            env["WINEDLLOVERRIDES"] = f"{PROTON_GRAPHICS_OVERRIDES};{user}"
         runner.run(command, cwd, env=env)
         return revision

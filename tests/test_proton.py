@@ -88,6 +88,22 @@ class ProtonLinuxTests(unittest.TestCase):
         self.assertEqual(env["PROTONPATH"], str(proton.parent))
         self.assertEqual(env["PRESSURE_VESSEL_FILESYSTEMS_RO"], str(game.parent))
 
+    def test_warm_up_verb_reaches_umu_and_direct_proton(self):
+        proton = self.fake_executable(self.steam / "steamapps/common/Proton Fixture/proton")
+        (proton.parent / "toolmanifest.vdf").touch()
+        install = ProtonInstall("Fixture", proton, self.steam)
+        exe = self.root / "layer.exe"
+        prefix = self.root / "compatdata"
+        with patch("sunset_launcher.proton.shutil.which", return_value="/tools/umu-run"):
+            _, env = proton_launch(install, exe, [], prefix, verb="runinprefix")
+        self.assertEqual(env["PROTON_VERB"], "runinprefix")
+        with patch("sunset_launcher.proton.shutil.which", return_value=None):
+            argv, _ = proton_launch(install, exe, ["shaders"], prefix, verb="runinprefix")
+        self.assertEqual(argv[:3], [str(proton), "runinprefix", str(exe)])
+        with patch("sunset_launcher.proton.shutil.which", return_value=None):
+            argv, _ = proton_launch(install, exe, [], prefix)
+        self.assertEqual(argv[1], "run")
+
     def test_prepared_wine_preserves_required_dll_overrides(self):
         proton = self.fake_executable(self.root / "Proton Fixture/proton")
         wine = self.fake_executable(proton.parent / "files/bin/wine")

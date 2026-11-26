@@ -28,7 +28,7 @@ class ShaderCacheTests(unittest.TestCase):
         return path
 
     def test_victory_family_removes_only_recognized_cache_files(self):
-        project = self.projects["ztrx"]
+        project = self.projects["victory"]
         cache = self.library.project_dir(project) / "runtime/cache"
         removed = [
             self.write(cache / "shaders/ab" / ("c" * 62), b"VSH1"),

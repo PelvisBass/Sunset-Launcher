@@ -27,7 +27,7 @@ from .backend import (
 from .catalog import PROJECTS, Project
 from .logs import open_run_log, prune_run_logs
 from .proton import ProtonInstall, custom_proton, discover_proton, prepared_wine_prefix, proton_supported
-from .sysinfo import available_memory, process_group_memory
+from .sysinfo import available_memory, process_tree_memory
 from .warmup import WarmupTracker, format_bytes, format_duration
 
 LIBRARY_PAGE, INSTALL_PAGE, WARMUP_PAGE, ACTIVITY_PAGE = range(4)
@@ -385,7 +385,7 @@ class ProjectRow(QPushButton):
         color = {
             "Ready": "#9ce1ce", "Failed": "#ffafa8", "Building": "#ffb895",
             "Updating": "#ffb895", "Running": "#f7a7ce", "Queued": "#dfbae9",
-            "Needs setup": "#ffcf9a", "Up to date": "#9ce1ce", "Update available": "#ffcf9a",
+            "Needs setup": "#ffcf9a", "Up to date": "#9ce1ce", "Update available": "#ffcf9a", "Warm-up failed": "#ffafa8", "Warming up": "#ffb895",
             "Checking": "#dfbae9", "Upstream diverged": "#ffafa8", "Check unavailable": "#ffafa8",
             "Upstream unavailable": "#ffcf9a",
         }.get(status, "#bbb0c6")
@@ -587,6 +587,9 @@ class Job(QObject):
                         if self.action == "check":
                             self.update_check.emit(project.key, "Check unavailable", str(error))
                             self.state.emit(project.key, "Check unavailable")
+                        elif self.action == "warm":
+                            # Only for the job: the row then shows its update status again, since the build is fine.
+                            self.state.emit(project.key, "Warm-up failed")
                         elif not shader_job:
                             self.state.emit(project.key, "Failed")
                         output(f"Error: {error}\n")
@@ -1322,7 +1325,7 @@ class MainWindow(QMainWindow):
             self._update_warm_card()
         self.warm_stats["free"].setText(format_bytes(available_memory()))
         pid = self.worker.runner.pid if self.warm_key is not None and self.worker is not None else None
-        used = process_group_memory(pid) if pid else None
+        used = process_tree_memory(pid) if pid else None
         self.warm_stats["used"].setText(format_bytes(used) if used is not None else "—")
 
     def _update_warm_card(self):
