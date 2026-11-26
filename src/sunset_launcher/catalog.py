@@ -32,6 +32,7 @@ class Recipe:
     # Shown in the Launch options field. {options} in command marks where its arguments go.
     options_hint: str = ""
     launch_env: tuple[tuple[str, str], ...] = ()
+    console_modes: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -302,10 +303,11 @@ COOL_FOX_RECIPES = {
     host: replace(
         recipe,
         steps=(replace(recipe.steps[0], label="Build Cool Fox"),),
-        command=("{artifact}", "run", "{game}", "--console", "series-s", "--execute", "{options}"),
+        command=("{artifact}", "run", "{game}", "--console", "{console_mode}", "--execute", "{options}"),
         launch_paths=VICTORY_LAUNCH_PATHS,
         launch_env=COOL_FOX_LAUNCH_ENV,
-        options_hint="Series S preset · put -- before arguments for the game",
+        console_modes=("series-s", "series-x"),
+        options_hint="Put -- before arguments for the game",
         launch_note=(
             "Uses the upstream pareto-residency settings. Proton launch is experimental."
             if host == "linux" else "Uses the upstream pareto-residency settings."

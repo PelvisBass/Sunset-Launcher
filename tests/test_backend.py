@@ -81,7 +81,7 @@ class RecipeTests(unittest.TestCase):
                 parse_launch_options('--log-file "unclosed')
 
     def test_launch_arguments_go_where_each_layer_reads_them(self):
-        values = {"artifact": "layer.exe", "game": "Game.exe", "venv_python": "python"}
+        values = {"artifact": "layer.exe", "game": "Game.exe", "venv_python": "python", "console_mode": "series-s"}
         options = ["--flag", "value"]
         expected = {
             "xcl": ["layer.exe", "run", "Game.exe", "--flag", "value"],
@@ -108,6 +108,7 @@ class RecipeTests(unittest.TestCase):
                 self.assertEqual(recipe.artifact, f"target/{target}release/victory.exe")
                 self.assertIn("--release", recipe.steps[0].command)
                 self.assertIn("--locked", recipe.steps[0].command)
+                self.assertEqual(recipe.console_modes, ("series-s", "series-x"))
                 self.assertEqual(dict(recipe.launch_env)["VICTORY_CARD_BUFFERS_MIN_KB"], "64")
                 self.assertEqual(dict(recipe.launch_paths), {"VICTORY_CACHE_DIR": "cache", "VICTORY_DATA_DIR": "data"})
 
@@ -263,6 +264,22 @@ class LibraryTests(unittest.TestCase):
         )
         self.assertIn(f"probe {['--fast', 'quoted arg', str(self.game)]!r} two words\n", self.output)
         self.assertIn("Launch settings: SUNSET_OPTION=two words\n", self.output)
+
+    def test_cool_fox_launch_passes_the_selected_console_mode_once(self):
+        project = next(project for project in PROJECTS if project.key == "cool_fox")
+        runner = Runner(self.output.append)
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch.object(self.library, "revision", return_value="fixture"),
+            patch.object(runner, "run") as run,
+        ):
+            self.library.launch(project, str(self.game), None, runner)
+            self.assertEqual(run.call_args.args[0][3:], ["--console", "series-s", "--execute"])
+            self.library.launch(project, str(self.game), None, runner, console_mode="series-x", options="-- --console=game")
+            self.assertEqual(run.call_args.args[0][3:], ["--console", "series-x", "--execute", "--", "--console=game"])
+            with self.assertRaisesRegex(OperationError, "Choose the console mode in the selector"):
+                self.library.launch(project, str(self.game), None, runner, options="--console=series-x")
+            self.assertEqual(run.call_count, 2)
 
     def test_check_reports_new_upstream_commit_without_fetching_or_rebuilding(self):
         first = self.build()

@@ -34,7 +34,7 @@ Keep the extracted folder together, including `_internal`. The Windows build is 
 | [hyphennn](https://github.com/fxceless/victory-fork) | ✅ Proton (experimental) | ✅ Native |
 | [DexNom Runtime](https://github.com/DexNom/VIctory) | ✅ Proton (experimental) | ✅ Native |
 | [AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX) | ✅ Proton (experimental) | ✅ Native, tested on RX 7900 XTX |
-| [Cool Fox](https://github.com/codec-d/cool_fox) | ✅ Proton (experimental) | ✅ Native, Series S preset |
+| [Cool Fox](https://github.com/codec-d/cool_fox) | ✅ Proton (experimental) | ✅ Native |
 | ZTRX | ⚠️ Existing builds only | ⚠️ Existing builds only |
 
 ZTRX's upstream repository is no longer on GitHub. Existing local builds still launch, and update checks skip it. Whether a particular title runs depends on the upstream project, the build and your hardware.
@@ -64,6 +64,7 @@ ZTRX's upstream repository is no longer on GitHub. Existing local builds still l
 - **Victory and hyphennn:** some titles need a native Microsoft D3DCompiler DLL in the prefix.
 - **DexNom Runtime on Linux:** the build needs PowerShell (`pwsh`) to download and verify its format tables.
 - **AvatarManz and Cool Fox:** each comes preset with its upstream renderer settings ([AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX#how-to-run-it), [Cool Fox](https://github.com/codec-d/cool_fox#run-the-codec_d-windows-build)). Add `VAR=value` in **Launch options** to override any of them.
+- **Cool Fox** defaults to Series S. Use **Console mode** to switch to Series X with the existing build.
 - **TuxBox:** selects its own Proton through umu. Some titles need its built providers staged first. See the [Lanes example](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play).
 - **Launch argument placement:**
 

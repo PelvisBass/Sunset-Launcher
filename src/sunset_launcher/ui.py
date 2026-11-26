@@ -318,6 +318,7 @@ class Job(QObject):
     def __init__(
         self, library: Library, projects: tuple[Project, ...], action: str,
         game: str, proton: ProtonInstall | None, prepared_prefix: Path | None, launch_options: str = "",
+        *, console_mode: str | None = None,
     ):
         super().__init__()
         self.library = library
@@ -327,6 +328,7 @@ class Job(QObject):
         self.proton = proton
         self.prepared_prefix = prepared_prefix
         self.launch_options = launch_options
+        self.console_mode = console_mode
         self.runner = Runner(self.line.emit)
 
     @Slot()
@@ -368,6 +370,7 @@ class Job(QObject):
                             self.library.launch(
                                 project, self.game, self.proton, self.runner,
                                 prepared_prefix=self.prepared_prefix, options=self.launch_options,
+                                console_mode=self.console_mode,
                             )
                             output("Exited successfully.\n")
                         elif self.action == "delete":
@@ -405,6 +408,14 @@ class Job(QObject):
                             self.state.emit(project.key, check.status)
                         elif not shader_job:
                             self.state.emit(project.key, "Not built" if self.action == "delete" else "Ready")
+                    finally:
+                        if self.action == "launch" and (recipe := recipe_for(project)) and recipe.shader_cache:
+                            try:
+                                # A stopped game may have written cache files before it exited.
+                                size = self.library.shader_usage(project, Runner(output))
+                                self.shader_usage.emit(project.key, size)
+                            except OSError as error:
+                                output(f"Could not measure the shader cache: {error}\n")
                 if self.action == "check" and (setup_needed or failures):
                     result = f"Update check complete · {setup_needed + failures} unavailable"
                 elif setup_needed or failures:
@@ -681,6 +692,18 @@ class MainWindow(QMainWindow):
         runtime.addLayout(links)
         layout.addWidget(self.runtime_box)
 
+        self.console_mode_box = QWidget()
+        mode_layout = QHBoxLayout(self.console_mode_box)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_title = label("Console mode")
+        mode_title.setProperty("fieldLabel", True)
+        self.console_mode = QComboBox()
+        mode_title.setBuddy(self.console_mode)
+        self.console_mode.activated.connect(self._save_console_mode)
+        mode_layout.addWidget(mode_title)
+        mode_layout.addWidget(self.console_mode, 1)
+        layout.addWidget(self.console_mode_box)
+
         options_title = label("Launch options")
         options_title.setProperty("fieldLabel", True)
         layout.addWidget(options_title)
@@ -750,6 +773,14 @@ class MainWindow(QMainWindow):
         self.repository.setEnabled(not project.upstream_unavailable)
         self.repository.setToolTip(project.upstream_unavailable)
         self._restore_proton()
+        modes = recipe.console_modes if recipe is not None else ()
+        self.console_mode_box.setVisible(bool(modes))
+        self.console_mode.clear()
+        for mode in modes:
+            self.console_mode.addItem(mode.replace("-", " ").title(), mode)
+        if modes:
+            saved_mode = self.settings.value(f"consoleMode/{project.key}", modes[0], type=str)
+            self.console_mode.setCurrentIndex(max(0, self.console_mode.findData(saved_mode)))
         self.launch_options.setText(self.settings.value(f"launchOptions/{project.key}", "", type=str))
         self.launch_options.setPlaceholderText(recipe.options_hint if recipe is not None else "")
         self.launch_options.setToolTip(
@@ -758,6 +789,9 @@ class MainWindow(QMainWindow):
         )
         self.launch_options.setEnabled(recipe is not None)
         self._refresh()
+
+    def _save_console_mode(self):
+        self.settings.setValue(f"consoleMode/{self.selected.key}", self.console_mode.currentData())
 
     def _save_launch_options(self):
         self.settings.setValue(f"launchOptions/{self.selected.key}", self.launch_options.text().strip())
@@ -1095,7 +1129,10 @@ class MainWindow(QMainWindow):
             except OperationError as error:
                 QMessageBox.warning(self, "Launch options", str(error))
                 return
-        job = Job(self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix(), options)
+        job = Job(
+            self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix(), options,
+            console_mode=self.console_mode.currentData() if action == "launch" else None,
+        )
         if self.thread is not None:
             self._job_after_startup_check = job
             self._stop()

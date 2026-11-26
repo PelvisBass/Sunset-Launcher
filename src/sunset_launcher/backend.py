@@ -649,7 +649,7 @@ class Library:
 
     def launch(
         self, project: Project, raw_game: str, proton: ProtonInstall | None,
-        runner: Runner, *, prepared_prefix: Path | None = None, options: str = "",
+        runner: Runner, *, prepared_prefix: Path | None = None, options: str = "", console_mode: str | None = None,
     ) -> None:
         recipe = self._require_recipe(project)
         if self.revision(project) is None:
@@ -658,6 +658,16 @@ class Library:
         option_env, option_args = parse_launch_options(options)
         values = self._values(project, recipe)
         values["game"] = proton_game_path(game) if recipe.runtime == "proton" else str(game)
+        if recipe.console_modes:
+            mode = recipe.console_modes[0] if console_mode is None else console_mode
+            if mode not in recipe.console_modes:
+                raise OperationError(f"Unsupported console mode for {project.name}: {mode}")
+            for arg in option_args:
+                if arg == "--":
+                    break
+                if arg == "--console" or arg.startswith("--console="):
+                    raise OperationError("Choose the console mode in the selector and remove --console from Launch options.")
+            values["console_mode"] = mode
         command = expand_command(recipe.command, values, option_args)
         env = None
         if recipe.runtime == "proton":

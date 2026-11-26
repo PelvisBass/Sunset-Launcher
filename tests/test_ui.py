@@ -11,7 +11,7 @@ from PySide6.QtCore import QEventLoop, QSettings, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sunset_launcher.__main__ import apply_theme
-from sunset_launcher.backend import UpdateCheck, recipe_for
+from sunset_launcher.backend import OperationError, UpdateCheck, recipe_for
 from sunset_launcher.proton import ProtonInstall
 from sunset_launcher.ui import Hero, MainWindow
 
@@ -133,6 +133,29 @@ class DesktopTests(unittest.TestCase):
             finally:
                 window.close()
 
+    def test_cool_fox_console_mode_is_saved_and_passed_to_the_launch_job(self):
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+            data = Path(directory)
+            for saved_mode in ("series-s", "series-x"):
+                window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
+                try:
+                    window.rows["victory"].click()
+                    self.assertTrue(window.console_mode_box.isHidden())
+                    window.rows["cool_fox"].click()
+                    self.assertFalse(window.console_mode_box.isHidden())
+                    self.assertEqual(window.console_mode.currentData(), saved_mode)
+                    series_x = window.console_mode.findData("series-x")
+                    window.console_mode.setCurrentIndex(series_x)
+                    window.console_mode.activated.emit(series_x)
+                    game = data / "game.exe"
+                    game.touch()
+                    window.game.setText(str(game))
+                    with patch.object(window, "_begin_job") as begin:
+                        window._start((window.selected,), "launch")
+                    self.assertEqual(begin.call_args.args[0].console_mode, "series-x")
+                finally:
+                    window.close()
+
     def test_shared_game_path_migrates_an_executable_and_remembers_clear(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)
@@ -205,6 +228,54 @@ class DesktopTests(unittest.TestCase):
                     self.assertFalse(window.update.isEnabled())
                     self.assertFalse(window.check_updates.isEnabled())
                     self.assertTrue(window.launch.isEnabled())
+            finally:
+                window.close()
+
+    def test_shader_cache_size_refreshes_after_a_launch_ends(self):
+        with TemporaryDirectory() as directory:
+            data = Path(directory).resolve()
+            game = data / "game.exe"
+            game.touch()
+            proton = ProtonInstall("Test Proton", data / "proton")
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.rows["cool_fox"].click()
+                project = window.selected
+                if recipe_for(project) is None:
+                    self.skipTest("The fixture requires a supported launch platform")
+                window.game.setText(str(game))
+                shader = window.library.project_dir(project) / "runtime/cache/shaders/ab" / ("c" * 62)
+                shader.parent.mkdir(parents=True)
+
+                for size, result in ((8, "Launch finished"), (16, "1 failed"), (32, "Stopped")):
+                    with self.subTest(result=result):
+                        def launch(_project, _game, _proton, runner, **_options):
+                            shader.write_bytes(b"VSH1" + bytes(size - 4))
+                            if result == "1 failed":
+                                raise OperationError("Fixture launch failed.")
+                            if result == "Stopped":
+                                runner.cancel()
+                                runner.check_cancelled()
+
+                        with (
+                            patch.object(window.library, "launch", side_effect=launch),
+                            patch.object(window.library, "revision", return_value="a" * 40),
+                            patch.object(window, "_chosen_proton", return_value=proton),
+                        ):
+                            window._refresh_actions()
+                            window.launch.click()
+                            self.assertIsNotNone(window.thread)
+                            finished = QEventLoop()
+                            watchdog = QTimer()
+                            watchdog.setSingleShot(True)
+                            watchdog.timeout.connect(finished.quit)
+                            window.thread.finished.connect(finished.quit)
+                            watchdog.start(3000)
+                            finished.exec()
+                            self.assertIsNone(window.thread)
+                            self.assertEqual(window.shader_sizes[project.key], size)
+                            self.assertTrue(window.clear_shaders.isEnabled())
+                            self.assertEqual(window.summary.text(), result)
             finally:
                 window.close()
 
