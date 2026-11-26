@@ -91,6 +91,24 @@ class DesktopTests(unittest.TestCase):
             finally:
                 window.close()
 
+    @patch.object(sys, "platform", "linux")  # The full catalog makes the project list taller than the panel
+    def test_details_panel_keeps_its_natural_height(self):
+        from PySide6.QtWidgets import QFrame
+
+        with TemporaryDirectory() as directory:
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.resize(1180, 1020)
+                window.show()
+                self.app.processEvents()
+                detail = window.findChild(QFrame, "detail")
+                natural = detail.heightForWidth(detail.width()) if detail.hasHeightForWidth() else detail.sizeHint().height()
+                self.assertEqual(detail.y(), window.project_list.y())
+                self.assertEqual(detail.height(), natural)
+                self.assertLess(detail.height(), window.project_list.height())
+            finally:
+                window.close()
+
     @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
     def test_launch_options_are_saved_per_project(self):
         with TemporaryDirectory() as directory:
