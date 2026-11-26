@@ -1,0 +1,239 @@
+"""Exercise shader warm-up estimates, memory readings, and the Install and Warm-up pages."""
+
+import os
+import sys
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtWidgets import QApplication
+
+from sunset_launcher.__main__ import apply_theme
+from sunset_launcher.backend import Library, WarmupProgress, recipe_for
+from sunset_launcher.catalog import PROJECTS
+from sunset_launcher.sysinfo import process_group_memory
+from sunset_launcher.ui import INSTALL_PAGE, LIBRARY_PAGE, WARMUP_PAGE, MainWindow
+from sunset_launcher.warmup import WarmupTracker, format_bytes, format_duration
+
+
+class Clock:
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
+
+
+class TrackerTests(unittest.TestCase):
+    def test_speed_and_time_left_follow_recent_progress(self):
+        clock = Clock()
+        tracker = WarmupTracker(clock)
+        tracker.update(WarmupProgress(0, 1000, "shaders"))
+        self.assertIsNone(tracker.speed)
+        self.assertIsNone(tracker.seconds_left)
+        clock.now += 10
+        tracker.update(WarmupProgress(200, 1000, "shaders"))
+        self.assertEqual(tracker.fraction, 0.2)
+        self.assertEqual(tracker.speed, 20)
+        self.assertEqual(tracker.seconds_left, 40)
+
+    def test_a_new_file_starts_a_new_estimate(self):
+        clock = Clock()
+        tracker = WarmupTracker(clock)
+        tracker.update(WarmupProgress(10, 100, "containers", "first.bin"))
+        clock.now += 10
+        tracker.update(WarmupProgress(60, 100, "containers", "first.bin"))
+        clock.now += 10
+        tracker.update(WarmupProgress(5, 400, "containers", "second.bin"))
+        self.assertIsNone(tracker.speed)
+        self.assertEqual(tracker.fraction, 5 / 400)
+
+    def test_a_running_count_has_a_speed_but_no_time_left(self):
+        clock = Clock()
+        tracker = WarmupTracker(clock)
+        tracker.update(WarmupProgress(1000, None, "shaders"))
+        clock.now += 4
+        tracker.update(WarmupProgress(2000, None, "shaders"))
+        self.assertEqual(tracker.speed, 250)
+        self.assertIsNone(tracker.fraction)
+        self.assertIsNone(tracker.seconds_left)
+
+    def test_formatting(self):
+        self.assertEqual([format_duration(value) for value in (None, 9, 69, 3725)], ["—", "9s", "1m 09s", "1h 02m"])
+        self.assertEqual(format_bytes(None), "—")
+        self.assertEqual(format_bytes(int(9.7 * 2**30)), "9.7 GB")
+        self.assertEqual(format_bytes(700 * 2**20), "700 MB")
+
+
+class MemoryTests(unittest.TestCase):
+    def test_process_group_memory_sums_the_warm_up_group(self):
+        page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "linux"), \
+                patch("sunset_launcher.sysinfo.os.sysconf", return_value=page, create=True):
+            proc = Path(directory)
+            # pid, command (with spaces and parentheses), state, ppid, pgrp, then resident pages in statm.
+            for pid, name, group, pages in ((41, "victory.exe", 41, 100), (42, "dxc (worker) 2", 41, 50),
+                                            (77, "other", 77, 999)):
+                (proc / str(pid)).mkdir()
+                (proc / str(pid) / "stat").write_text(f"{pid} ({name}) S 1 {group} {group} 0 -1 4194560\n")
+                (proc / str(pid) / "statm").write_text(f"5000 {pages} 30 1 0 400 0\n")
+            (proc / "self").mkdir()
+            self.assertEqual(process_group_memory(41, proc), 150 * page)
+            self.assertIsNone(process_group_memory(12, proc))
+
+
+class PageTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.app = QApplication.instance() or QApplication(["sunset-launcher-tests", "-platform", "offscreen"])
+        apply_theme(cls.app)
+
+    def wait_for(self, condition):
+        loop = QEventLoop()
+        poll = QTimer()
+        poll.setInterval(10)
+        poll.timeout.connect(lambda: loop.quit() if condition() else None)
+        watchdog = QTimer()
+        watchdog.setSingleShot(True)
+        watchdog.timeout.connect(loop.quit)
+        poll.start()
+        watchdog.start(4000)
+        try:
+            if not condition():
+                loop.exec()
+            self.assertTrue(condition(), "The launcher job did not reach the expected state.")
+        finally:
+            poll.stop()
+            watchdog.stop()
+
+    def window(self, directory):
+        window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+        self.addCleanup(window.close)
+        window.show()
+        self.app.processEvents()
+        return window
+
+    @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
+    def test_install_moves_a_built_layer_into_the_library(self):
+        project = next(item for item in PROJECTS if item.key == "victory")
+        installed: dict[str, str] = {}
+
+        def build(library, item, update, runner):
+            installed[item.key] = "b" * 40
+            return installed[item.key]
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(Library, "revision", lambda library, item: installed.get(item.key)),
+            patch.object(Library, "build", build),
+        ):
+            window = self.window(directory)
+            self.assertFalse(window.empty_library.isHidden())
+            self.assertTrue(window.library_grid.isHidden())
+            available = [item for item in PROJECTS if recipe_for(item) is not None]
+            visible_cards = [key for key, card in window.install_cards.items() if not card.isHidden()]
+            self.assertEqual(visible_cards, [item.key for item in available])
+            self.assertEqual(window.nav.button(INSTALL_PAGE).badge.text(), str(len(available)))
+            self.assertEqual(window.nav.button(LIBRARY_PAGE).badge.text(), "")
+
+            window._show_page(INSTALL_PAGE)
+            window.install_cards[project.key].install.click()
+            self.wait_for(lambda: window.thread is None and project.key in installed)
+            self.app.processEvents()
+            self.assertTrue(window.install_cards[project.key].isHidden())
+            self.assertFalse(window.rows[project.key].isHidden())
+            self.assertTrue(all(row.isHidden() for key, row in window.rows.items() if key != project.key))
+            self.assertTrue(window.empty_library.isHidden())
+            self.assertEqual(window.selected, project)
+            self.assertIn("installed", window.summary.text())
+            self.assertEqual(window.nav.button(LIBRARY_PAGE).badge.text(), "1")
+            self.assertEqual(window.nav.button(INSTALL_PAGE).badge.text(), str(len(available) - 1))
+
+    def test_warm_up_shows_progress_and_remembers_the_warmed_build(self):
+        project = next(item for item in PROJECTS if item.key == "xcl")
+        if recipe_for(project) is None:
+            self.skipTest("The fixture requires a supported build platform")
+        calls = []
+
+        def warm_up(library, item, raw_game, proton, runner, **settings):
+            calls.append((item.key, raw_game, settings["jobs"]))
+            for line in ("precompiling 1000 shaders into cache", "  250/1000 (5 s)", "  1000/1000 (9 s)"):
+                runner.output(line + "\n")
+            return "c" * 40
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(Library, "revision", lambda library, item: "c" * 40 if item.key == "xcl" else None),
+            patch.object(Library, "warm_up", warm_up),
+            patch.object(sys, "platform", "win32"),  # A native runtime needs no Proton selection.
+        ):
+            game = Path(directory) / "Game.exe"
+            game.touch()
+            window = self.window(directory)
+            window.game.setText(str(game))
+            window._open_warmup(project)
+            self.assertEqual(window.pages.currentIndex(), WARMUP_PAGE)
+            self.assertEqual(window.warm_layer.currentData(), project)
+            self.assertIn("Not warmed up", window.warm_stage.text())
+            self.assertTrue(window._needs_warmup(project, str(game)))
+            window.warm_jobs.setCurrentIndex(window.warm_jobs.findData(4))
+            window.warm_button.click()
+            self.wait_for(lambda: window.thread is None and calls)
+            self.app.processEvents()
+            self.assertEqual(calls, [("xcl", str(game), 4)])
+            self.assertEqual(window.warm_title.text(), "Warm-up finished")
+            self.assertEqual(window.warm_percent.text(), "100%")
+            self.assertEqual(window.warm_stats["done"].text(), "1,000 / 1,000")
+            self.assertEqual(window.warm_button.text(), "Warm up")
+            self.assertFalse(window._needs_warmup(project, str(game)))
+            self.assertIn("Warmed up for this game", window.warm_stage.text())
+
+    def test_launch_warms_up_first_only_after_a_change(self):
+        project = next(item for item in PROJECTS if item.key == "xcl")
+        events = []
+        revision = {"value": "d" * 40}
+
+        def warm_up(library, item, raw_game, proton, runner, **settings):
+            events.append("warm")
+            return revision["value"]
+
+        def launch(library, item, raw_game, proton, runner, **settings):
+            events.append("launch")
+
+        with (
+            TemporaryDirectory() as directory,
+            patch.object(Library, "revision", lambda library, item: revision["value"] if item.key == "xcl" else None),
+            patch.object(Library, "warm_up", warm_up),
+            patch.object(Library, "launch", launch),
+            patch.object(Library, "shader_usage", return_value=0),
+            patch.object(sys, "platform", "win32"),
+        ):
+            game = Path(directory) / "Game.exe"
+            game.touch()
+            window = self.window(directory)
+            window._select(project)
+            window.game.setText(str(game))
+            for expected in (["warm", "launch"], ["launch"]):
+                events.clear()
+                window.launch.click()
+                self.wait_for(lambda: window.thread is None and "launch" in events)
+                self.assertEqual(events, expected)
+            # A rebuilt layer warms up again before its next launch.
+            revision["value"] = "e" * 40
+            events.clear()
+            window.launch.click()
+            self.wait_for(lambda: window.thread is None and "launch" in events)
+            self.assertEqual(events, ["warm", "launch"])
+            # With the setting off, Launch starts the game directly.
+            revision["value"] = "f" * 40
+            window.warm_before_launch.setChecked(False)
+            events.clear()
+            window.launch.click()
+            self.wait_for(lambda: window.thread is None and "launch" in events)
+            self.assertEqual(events, ["launch"])
+
+
+if __name__ == "__main__":
+    unittest.main()

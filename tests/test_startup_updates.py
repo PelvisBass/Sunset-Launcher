@@ -111,7 +111,8 @@ class StartupUpdateTests(unittest.TestCase):
 
     def test_startup_measures_shader_caches_after_the_update_check(self):
         built = PROJECTS[0]
-        cached = [project for project in PROJECTS if (recipe := recipe_for(project)) and recipe.shader_cache]
+        # Only installed layers are measured: here, the one built project.
+        cached = [built] if (recipe := recipe_for(built)) and recipe.shader_cache else []
         if built not in cached:
             self.skipTest("The fixture requires a supported build platform")
         order = []

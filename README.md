@@ -41,7 +41,9 @@ ZTRX's upstream repository is no longer on GitHub. Existing local builds still l
 
 ## ✨ Features
 
-- **One-click builds:** clone, compile and track each layer's upstream commit. **Update & build all** follows the project order, which you can change by dragging.
+- **Install tab:** pick a layer and select **Install** to clone and build it. Your library lists only the layers you've installed.
+- **Shader warm-up:** compile a game's shaders before you play, with live progress, speed, time left, free RAM and the warm-up's own RAM. It can run automatically before a launch after a layer update. Uses each layer's own warm-up tool (XCL, Victory, AvatarManz, Cool Fox and TuxBox).
+- **One-click updates:** track each layer's upstream commit. **Update & build all** follows the library order, which you can change by dragging.
 - **Update checks:** at startup the launcher shows **Up to date** or **Update available** for each build.
 - **Proton on Linux:** finds Steam, Flatpak, umu, Lutris and Heroic Proton builds. It prefers `umu-run`, and each project gets its own prefix.
 - **Launch options:** per-project settings in the style of Steam's launch options. `VAR=value` entries set environment variables, and the remaining arguments go where each layer expects them.
@@ -49,13 +51,13 @@ ZTRX's upstream repository is no longer on GitHub. Existing local builds still l
 - **Shared game path:** pick a game once and launch it with any layer.
 - **Activity log:** live output from every job, with the last two job logs kept.
 
-<img src="docs/images/activity.png" alt="Activity page streaming a Victory update and build" width="860">
+<img src="docs/images/warmup.png" alt="Warm-up page compiling XCL shaders at 64 percent, with done, speed, time left, free RAM and warm-up RAM" width="860">
 
 ## 🚀 Quick start
 
-1. Install **Git**. Select a project and open **Build setup** for its toolchain, usually Rust plus a few extras.
-2. Select **Build**. If something is missing, the project shows **Needs setup** and **Activity** lists what to install.
-3. Set **Shared game path**, pick a **Proton version** on Linux, and select **Launch**.
+1. Install **Git**. Open **Install**, check a layer's **Requirements** (usually Rust plus a few extras), then select **Install**.
+2. If something is missing, the layer shows **Needs setup** and **Activity** lists what to install. Once it builds, it moves to **Library**.
+3. Set **Shared game path**, pick a **Proton version** on Linux, and select **Launch**. Use **Warm-up** first to compile the game's shaders ahead of time.
 
 <details>
 <summary><b>Layer notes and tips</b></summary>
@@ -75,7 +77,9 @@ ZTRX's upstream repository is no longer on GitHub. Existing local builds still l
   | TuxBox | To the layer |
 
 - **Build tools in the data folder:** on Linux, tools placed under `build-tools/` in the data folder are picked up. These include Cargo and Rustup, MinGW-w64, DXC and the cargo-xwin SDK cache.
-- **Delete build…** removes only recorded build outputs. Checkouts, caches, saves, game files and prefixes stay.
+- **Warm-up progress:** XCL reports overall progress and time left. Victory works through the game's files one at a time, so its percentage and time left are for the current file. AvatarManz and Cool Fox report a running count without a total. TuxBox prepares shaders with its own per-title profiles and reports no counts. hyphennn, ZTRX and DexNom Runtime have no warm-up the launcher can run.
+- **Parallel compiles:** each compile can hold over a gigabyte of RAM in the driver. Lower **Parallel compiles** on the Warm-up page if free RAM runs low.
+- **Delete build…** removes only recorded build outputs and moves the layer back to **Install**. Checkouts, caches, saves, game files and prefixes stay.
 - **Open data folder** holds the checkouts, preferences and logs.
 
 </details>

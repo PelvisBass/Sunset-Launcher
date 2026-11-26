@@ -13,10 +13,15 @@ from unittest.mock import patch
 
 from sunset_launcher import backend
 from sunset_launcher.backend import (
-    Library, OperationError, Runner, SetupRequired, expand_command, parse_launch_options, recipe_for,
+    Library, OperationError, Runner, SetupRequired, WarmupProgress, expand_command, parse_launch_options,
+    parse_warmup_progress, recipe_for,
     split_windows_options,
 )
 from sunset_launcher.catalog import PROJECTS, Recipe, Step
+
+
+def recipe_for_host(key, host):
+    return next(project for project in PROJECTS if project.key == key).recipes[host]
 
 
 class RecipeTests(unittest.TestCase):
@@ -79,6 +84,38 @@ class RecipeTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(OperationError, "launch options"):
                 parse_launch_options('--log-file "unclosed')
+
+    def test_warm_up_progress_lines_from_each_layer(self):
+        cases = {
+            "precompiling 41906 shaders into C:\\cache (15 compile threads; 4 memory windows)":
+                WarmupProgress(0, 41906, "shaders"),
+            "  12000/41906 (95 s)": WarmupProgress(12000, 41906, "shaders"),
+            "Z:\\Games\\Title\\data\\pack.bin: 812 of 4120 containers (19%), 31 s; all files so far: 2 cached":
+                WarmupProgress(812, 4120, "containers", "pack.bin"),
+            "/games/title/pipelines.pak: 5 of 90 pipelines (5%), 3 s": WarmupProgress(5, 90, "pipelines", "pipelines.pak"),
+            "4000 shaders in the cache, 52 s": WarmupProgress(4000, None, "shaders"),
+            "cache        /games/cache (512 MB)": None,
+            "containers   10 in 1.0 s: 10 already cached, 0 translated, 0 refused": None,
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(parse_warmup_progress(line + "\n"), expected)
+
+    def test_warm_up_is_offered_only_where_upstream_has_one(self):
+        kinds = {
+            project.key: {recipe.warmup_progress for recipe in project.recipes.values()}
+            for project in PROJECTS if any(recipe.warmup for recipe in project.recipes.values())
+        }
+        self.assertEqual(kinds, {
+            "xcl": {"total"}, "victory": {"file"}, "tuxbox": {"none"}, "avatarmanz": {"count"}, "cool_fox": {"count"},
+        })
+        values = {"artifact": "layer.exe", "game": "Game.exe", "game_dir": "Games", "venv_python": "python"}
+        self.assertEqual(expand_command(recipe_for_host("xcl", "linux").warmup, values),
+                         ["layer.exe", "shaders", "Games", "--precompile", "--pipelines"])
+        self.assertEqual(expand_command(recipe_for_host("victory", "windows").warmup, values, ["--jobs", "4"]),
+                         ["layer.exe", "translate", "Games", "--cache", "--pipelines", "--jobs", "4"])
+        self.assertEqual(expand_command(recipe_for_host("tuxbox", "linux").warmup, values),
+                         ["python", "tuxbox.py", "run", "--prepare-only", "Game.exe"])
 
     def test_launch_arguments_go_where_each_layer_reads_them(self):
         values = {"artifact": "layer.exe", "game": "Game.exe", "venv_python": "python", "console_mode": "series-s"}
@@ -280,6 +317,37 @@ class LibraryTests(unittest.TestCase):
             with self.assertRaisesRegex(OperationError, "Choose the console mode in the selector"):
                 self.library.launch(project, str(self.game), None, runner, options="--console=series-x")
             self.assertEqual(run.call_count, 2)
+
+    def test_warm_up_runs_with_the_launch_environment_and_worker_count(self):
+        revision = self.build()
+        recipe = next(iter(self.project.recipes.values()))
+        probe = (
+            "import json, os, sys; print('probe', json.dumps([sys.argv[1:], "
+            "dict((key, os.environ.get(key)) for key in ('LAYER_DEFAULT', 'USER_SETTING', 'PROBE_JOBS'))]))"
+        )
+        self.project = replace(self.project, recipes={host: replace(
+            recipe, warmup=("{python}", "-c", probe, "{game_dir}", "{options}"), warmup_jobs_arg="--jobs",
+            warmup_jobs_env=("PROBE_JOBS",), launch_env=(("LAYER_DEFAULT", "on"),),
+        ) for host in self.project.recipes})
+        warmed = self.library.warm_up(
+            self.project, str(self.game), None, Runner(self.output.append),
+            options="USER_SETTING=fast --game-argument", jobs=3,
+        )
+        self.assertEqual(warmed, revision)
+        line = next(line for line in self.output if line.startswith("probe "))
+        arguments, environment = json.loads(line.removeprefix("probe "))
+        # The game's folder and the worker count reach the warm-up. The game's own arguments do not.
+        self.assertEqual(arguments, [str(self.game.parent), "--jobs", "3"])
+        self.assertEqual(environment, {"LAYER_DEFAULT": "on", "USER_SETTING": "fast", "PROBE_JOBS": "3"})
+
+    def test_warm_up_needs_a_build_and_a_warm_up_command(self):
+        with self.assertRaisesRegex(OperationError, "no shader warm-up"):
+            self.library.warm_up(self.project, str(self.game), None, Runner(self.output.append))
+        recipe = next(iter(self.project.recipes.values()))
+        self.project = replace(self.project, recipes={host: replace(recipe, warmup=("{python}", "-c", "pass"))
+                                                      for host in self.project.recipes})
+        with self.assertRaisesRegex(OperationError, "Build this project"):
+            self.library.warm_up(self.project, str(self.game), None, Runner(self.output.append))
 
     def test_check_reports_new_upstream_commit_without_fetching_or_rebuilding(self):
         first = self.build()

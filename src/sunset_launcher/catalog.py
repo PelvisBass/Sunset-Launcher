@@ -33,6 +33,13 @@ class Recipe:
     options_hint: str = ""
     launch_env: tuple[tuple[str, str], ...] = ()
     console_modes: tuple[str, ...] = ()
+    # Shader warm-up runs like `command`, through the same runtime and cache settings, so a launch
+    # finds what it made. {game_dir} is the game's folder and {options} takes the worker count.
+    warmup: tuple[str, ...] = ()
+    warmup_jobs_arg: str = ""
+    warmup_jobs_env: tuple[str, ...] = ()
+    # What the upstream command reports: an overall total, a total per game file, a running count, or nothing.
+    warmup_progress: Literal["total", "file", "count", "none"] = "none"
 
 
 @dataclass(frozen=True)
@@ -52,6 +59,13 @@ class Project:
 XCL_LAUNCH = ("{artifact}", "run", "{game}", "{options}")
 XCL_OPTIONS = "e.g. XCL_NETWORK=1 DXVK_HUD=fps · other arguments go to the game"
 XCL_WINDOWS_OPTIONS = "e.g. XCL_NETWORK=1 · other arguments go to the game"
+
+# `xcl shaders --precompile` fills the DXIL cache a run reads, and --pipelines the driver's pipeline cache.
+XCL_WARMUP = dict(
+    warmup=("{artifact}", "shaders", "{game_dir}", "--precompile", "--pipelines"),
+    warmup_jobs_env=("XCL_DXC_THREADS",),
+    warmup_progress="total",
+)
 
 XCL_RECIPES = {
     "linux": Recipe(
@@ -86,6 +100,7 @@ XCL_RECIPES = {
         "prefix with DXVK and an XCL-compatible vkd3d-proton build.",
         rust_target="x86_64-pc-windows-gnu",
         shader_cache="xcl",
+        **XCL_WARMUP,
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -104,6 +119,7 @@ XCL_RECIPES = {
             "XCL requires a D3D12 GPU with mesh shaders and Shader Model 6.6, DXC and Windows Gaming Services.",
         ),
         shader_cache="xcl",
+        **XCL_WARMUP,
     ),
 }
 
@@ -111,6 +127,21 @@ XCL_RECIPES = {
 # Victory accepts its flags anywhere and passes arguments after -- to the title.
 VICTORY_LAUNCH = ("{artifact}", "run", "{game}", "--execute", "{options}")
 VICTORY_OPTIONS = "e.g. --console series-s · put -- before arguments for the game"
+
+# `victory translate --cache` is upstream's warm-up. --pipelines also fills the pipeline library.
+VICTORY_WARMUP = dict(
+    warmup=("{artifact}", "translate", "{game_dir}", "--cache", "--pipelines", "{options}"),
+    warmup_jobs_arg="--jobs",
+    warmup_progress="file",
+)
+# Forks without upstream's warm-up. hyphennn's needs a list of shader hashes from an earlier run.
+NO_WARMUP = dict(warmup=(), warmup_jobs_arg="", warmup_jobs_env=(), warmup_progress="none")
+# AvatarManz and Cool Fox translate every shader with `victory shaders` and report a running count.
+FORK_WARMUP = dict(
+    warmup=("{artifact}", "shaders", "{game_dir}", "{options}"),
+    warmup_jobs_arg="--jobs",
+    warmup_progress="count",
+)
 
 VICTORY_RECIPES = {
     "linux": Recipe(
@@ -136,6 +167,7 @@ VICTORY_RECIPES = {
         "in the Proton prefix.",
         rust_target="x86_64-pc-windows-msvc",
         shader_cache="victory",
+        **VICTORY_WARMUP,
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -151,6 +183,7 @@ VICTORY_RECIPES = {
         requirements=("Install Rust with rustup, Visual Studio C++ Build Tools and the Windows SDK.",),
         options_hint=VICTORY_OPTIONS,
         shader_cache="victory",
+        **VICTORY_WARMUP,
     ),
 }
 
@@ -204,6 +237,8 @@ TUXBOX_RECIPES = {
         needs_xwin_sdk=True,
         companion_outputs=TUXBOX_PROVIDERS,
         shader_cache="tuxbox",
+        # TuxBox prepares shaders with its own per-title profiles and reports no counts.
+        warmup=("{venv_python}", "tuxbox.py", "run", "--prepare-only", "{game}"),
     ),
     # TuxBox targets Linux. Windows users can run the upstream project directly.
 }
@@ -216,6 +251,7 @@ ZTRX_RECIPES = {
         VICTORY_RECIPES["linux"],
         steps=(replace(VICTORY_RECIPES["linux"].steps[0], label="Cross-compile ZTRX for Windows"),),
         launch_paths=VICTORY_LAUNCH_PATHS,
+        **NO_WARMUP,
         launch_note="Proton launch is experimental. Upstream documents Windows with an NVIDIA RTX GPU.",
         launch_url=f"{ZTRX_REPOSITORY}#requirements",
     ),
@@ -223,6 +259,7 @@ ZTRX_RECIPES = {
         VICTORY_RECIPES["windows"],
         steps=(replace(VICTORY_RECIPES["windows"].steps[0], label="Build ZTRX for Windows"),),
         launch_paths=VICTORY_LAUNCH_PATHS,
+        **NO_WARMUP,
         launch_note="Upstream requires an AVX2 CPU and an NVIDIA RTX 20-series or newer GPU.",
         launch_url=f"{ZTRX_REPOSITORY}#requirements",
     ),
@@ -243,6 +280,7 @@ DEXNOM_RECIPES = {
         ),
         command=("{artifact}", "run", "{game}", "--execute", "--console", "series-x", "--unimplemented", "trap", "{options}"),
         launch_paths=VICTORY_LAUNCH_PATHS,
+        **NO_WARMUP,
         options_hint="Put -- before arguments for the game",
         requirements=(*recipe.requirements, "Install PowerShell (pwsh) to initialize the format tables.")
         if host == "linux" else recipe.requirements,
@@ -275,6 +313,7 @@ AVATARMANZ_RECIPES = {
         steps=(Step((*command, *AVATARMANZ_BUILD), "Build AvatarManz"),),
         artifact=VICTORY_RECIPES[host].artifact.replace("/release/", "/diag/"),
         launch_paths=VICTORY_LAUNCH_PATHS,
+        **FORK_WARMUP,
         launch_env=AVATARMANZ_LAUNCH_ENV,
         launch_note=(
             "Proton launch is experimental. Upstream tests on Windows with a Radeon RX 7900 XTX."
@@ -305,6 +344,7 @@ COOL_FOX_RECIPES = {
         steps=(replace(recipe.steps[0], label="Build Cool Fox"),),
         command=("{artifact}", "run", "{game}", "--console", "{console_mode}", "--execute", "{options}"),
         launch_paths=VICTORY_LAUNCH_PATHS,
+        **FORK_WARMUP,
         launch_env=COOL_FOX_LAUNCH_ENV,
         console_modes=("series-s", "series-x"),
         options_hint="Put -- before arguments for the game",
@@ -354,7 +394,7 @@ PROJECTS = (
         description="Victory fork with work on rendering and gameplay compatibility.",
         repository="https://github.com/fxceless/victory-fork",
         setup_url="https://github.com/fxceless/victory-fork#readme",
-        recipes=VICTORY_RECIPES.copy(),
+        recipes={host: replace(recipe, **NO_WARMUP) for host, recipe in VICTORY_RECIPES.items()},
         game_input="file",
         accent="#b9a3f8",
     ),

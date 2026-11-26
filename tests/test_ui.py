@@ -11,9 +11,9 @@ from PySide6.QtCore import QEventLoop, QSettings, QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sunset_launcher.__main__ import apply_theme
-from sunset_launcher.backend import OperationError, UpdateCheck, recipe_for
+from sunset_launcher.backend import Library, OperationError, UpdateCheck, recipe_for
 from sunset_launcher.proton import ProtonInstall
-from sunset_launcher.ui import Hero, MainWindow
+from sunset_launcher.ui import ACTIVITY_PAGE, INSTALL_PAGE, LIBRARY_PAGE, WARMUP_PAGE, Hero, MainWindow
 
 
 class DesktopTests(unittest.TestCase):
@@ -23,6 +23,7 @@ class DesktopTests(unittest.TestCase):
         apply_theme(cls.app)
 
     @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
+    @patch.object(Library, "revision", lambda self, project: "a" * 40)  # Every layer installed
     def test_project_selection_and_installed_artwork(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)
@@ -92,6 +93,7 @@ class DesktopTests(unittest.TestCase):
                 window.close()
 
     @patch.object(sys, "platform", "linux")  # The full catalog makes the project list taller than the panel
+    @patch.object(Library, "revision", lambda self, project: "a" * 40)  # Every layer installed
     def test_details_panel_keeps_its_natural_height(self):
         from PySide6.QtWidgets import QFrame
 
@@ -190,6 +192,7 @@ class DesktopTests(unittest.TestCase):
                 window.close()
 
     @patch.object(sys, "platform", "linux")  # The full catalog, including Linux-only TuxBox
+    @patch.object(Library, "revision", lambda self, project: "a" * 40)  # Every layer installed
     def test_project_order_persists_and_drives_update_all(self):
         with TemporaryDirectory() as directory:
             data = Path(directory)

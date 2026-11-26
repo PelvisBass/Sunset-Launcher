@@ -37,6 +37,41 @@ class Cancelled(OperationError):
 
 
 @dataclass(frozen=True)
+class WarmupProgress:
+    done: int
+    total: int | None
+    unit: str
+    stage: str = ""
+
+
+# Victory: "<file>: 812 of 4120 containers (19%), 31 s; ..."
+_FILE_PROGRESS = re.compile(r"(?P<stage>.+): (?P<done>\d+) of (?P<total>\d+) (?P<unit>[a-z][a-z ]*?) \(\d+%\)")
+# XCL: "  12000/41906 (95 s)"
+_TOTAL_PROGRESS = re.compile(r"\s*(?P<done>\d+)/(?P<total>\d+) \(\d+ s\)\s*")
+# XCL's opening line: "precompiling 41906 shaders into ..."
+_TOTAL_START = re.compile(r"precompiling (?P<total>\d+) shaders\b")
+# AvatarManz and Cool Fox: "4000 shaders in the cache, 52 s"
+_COUNT_PROGRESS = re.compile(r"(?P<done>\d+) shaders in the cache[,\s]")
+
+
+def parse_warmup_progress(line: str) -> WarmupProgress | None:
+    """Read one line of upstream warm-up output."""
+    line = line.strip("\r\n")
+    if match := _TOTAL_START.match(line):
+        return WarmupProgress(0, int(match["total"]), "shaders")
+    if match := _TOTAL_PROGRESS.fullmatch(line):
+        return WarmupProgress(int(match["done"]), int(match["total"]), "shaders")
+    if match := _FILE_PROGRESS.match(line):
+        return WarmupProgress(
+            # Proton runs print Windows paths, so split on either separator.
+            int(match["done"]), int(match["total"]), match["unit"], re.split(r"[\\/]", match["stage"].strip())[-1],
+        )
+    if match := _COUNT_PROGRESS.match(line):
+        return WarmupProgress(int(match["done"]), None, "shaders")
+    return None
+
+
+@dataclass(frozen=True)
 class UpdateCheck:
     revision: str
     status: str
@@ -166,6 +201,12 @@ class Runner:
         self._lock = Lock()
         self._process: subprocess.Popen | None = None
         self._kill_timer: Timer | None = None
+
+    @property
+    def pid(self) -> int | None:
+        """The running command's process ID, which also leads its process group on Linux."""
+        process = self._process
+        return process.pid if process is not None else None
 
     def check_cancelled(self) -> None:
         if self.stopped.is_set():
@@ -647,17 +688,17 @@ class Library:
         expected = "file or folder" if project.game_input == "either" else "file"
         raise OperationError(f"The selected {expected} could not be found: {game}")
 
-    def launch(
-        self, project: Project, raw_game: str, proton: ProtonInstall | None,
-        runner: Runner, *, prepared_prefix: Path | None = None, options: str = "", console_mode: str | None = None,
-    ) -> None:
-        recipe = self._require_recipe(project)
-        if self.revision(project) is None:
-            raise OperationError("Build this project successfully before launching.")
-        game = self.game_path(project, raw_game)
+    def _invocation(
+        self, project: Project, recipe: Recipe, template: Sequence[str], game: Path,
+        proton: ProtonInstall | None, runner: Runner, *, prepared_prefix: Path | None, options: str,
+        console_mode: str | None, extra_args: Sequence[str] | None = None, extra_env: dict[str, str] | None = None,
+    ) -> tuple[list[str], dict[str, str] | None, Path]:
+        """Build a launch-style command with the runtime, cache and setting environment a launch uses."""
         option_env, option_args = parse_launch_options(options)
         values = self._values(project, recipe)
         values["game"] = proton_game_path(game) if recipe.runtime == "proton" else str(game)
+        folder = game if game.is_dir() else game.parent
+        values["game_dir"] = proton_game_path(folder) if recipe.runtime == "proton" else str(folder)
         if recipe.console_modes:
             mode = recipe.console_modes[0] if console_mode is None else console_mode
             if mode not in recipe.console_modes:
@@ -668,7 +709,7 @@ class Library:
                 if arg == "--console" or arg.startswith("--console="):
                     raise OperationError("Choose the console mode in the selector and remove --console from Launch options.")
             values["console_mode"] = mode
-        command = expand_command(recipe.command, values, option_args)
+        command = expand_command(template, values, option_args if extra_args is None else extra_args)
         env = None
         if recipe.runtime == "proton":
             if proton is None:
@@ -694,9 +735,56 @@ class Library:
             env = os.environ.copy() if env is None else env
             for key, value in recipe.launch_env:
                 env.setdefault(key, value)
+        if extra_env:
+            env = os.environ.copy() if env is None else env
+            env.update(extra_env)
         if option_env:
             # The user's settings win over recipe defaults such as WINEDLLOVERRIDES.
             env = os.environ.copy() if env is None else env
             env.update(option_env)
             runner.output("Launch settings: " + " ".join(f"{key}={value}" for key, value in option_env.items()) + "\n")
-        runner.run(command, Path(recipe.working_directory.format_map(values)), env=env)
+        return command, env, Path(recipe.working_directory.format_map(values))
+
+    def launch(
+        self, project: Project, raw_game: str, proton: ProtonInstall | None,
+        runner: Runner, *, prepared_prefix: Path | None = None, options: str = "", console_mode: str | None = None,
+    ) -> None:
+        recipe = self._require_recipe(project)
+        if self.revision(project) is None:
+            raise OperationError("Build this project successfully before launching.")
+        game = self.game_path(project, raw_game)
+        command, env, cwd = self._invocation(
+            project, recipe, recipe.command, game, proton, runner,
+            prepared_prefix=prepared_prefix, options=options, console_mode=console_mode,
+        )
+        runner.run(command, cwd, env=env)
+
+    def warm_up(
+        self, project: Project, raw_game: str, proton: ProtonInstall | None, runner: Runner, *,
+        prepared_prefix: Path | None = None, options: str = "", console_mode: str | None = None,
+        jobs: int | None = None,
+    ) -> str:
+        """Run the layer's own shader warm-up for the game and return the warmed revision.
+
+        Launch options' VAR=value settings apply, since they can change what a run compiles.
+        Their arguments do not: they belong to the game or the run command.
+        """
+        recipe = self._require_recipe(project)
+        if not recipe.warmup:
+            raise OperationError(f"{project.name} has no shader warm-up.")
+        revision = self.revision(project)
+        if revision is None:
+            raise OperationError("Build this project successfully before warming up shaders.")
+        game = self.game_path(project, raw_game)
+        extra_args: list[str] = []
+        extra_env: dict[str, str] = {}
+        if jobs:
+            if recipe.warmup_jobs_arg:
+                extra_args = [recipe.warmup_jobs_arg, str(jobs)]
+            extra_env = {name: str(jobs) for name in recipe.warmup_jobs_env}
+        command, env, cwd = self._invocation(
+            project, recipe, recipe.warmup, game, proton, runner, prepared_prefix=prepared_prefix,
+            options=options, console_mode=console_mode, extra_args=extra_args, extra_env=extra_env,
+        )
+        runner.run(command, cwd, env=env)
+        return revision

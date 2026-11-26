@@ -11,21 +11,27 @@ from contextlib import nullcontext
 from os.path import expanduser, isdir, isfile
 from pathlib import Path
 
-from PySide6.QtCore import QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, QTimer, Qt, QUrl, QObject, Signal, Slot
+from PySide6.QtCore import QDateTime, QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, QTimer, Qt, QUrl, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from . import RELEASES_URL, __version__
 from .backend import (
-    Cancelled, Library, OperationError, Runner, SetupRequired, host_environment, parse_launch_options, recipe_for,
+    Cancelled, Library, OperationError, Runner, SetupRequired, WarmupProgress, host_environment,
+    parse_launch_options, parse_warmup_progress, recipe_for,
 )
 from .catalog import PROJECTS, Project
 from .logs import open_run_log, prune_run_logs
 from .proton import ProtonInstall, custom_proton, discover_proton, prepared_wine_prefix, proton_supported
+from .sysinfo import available_memory, process_group_memory
+from .warmup import WarmupTracker, format_bytes, format_duration
+
+LIBRARY_PAGE, INSTALL_PAGE, WARMUP_PAGE, ACTIVITY_PAGE = range(4)
+WARMUP_JOBS = (0, 2, 4, 8, 16)
 
 
 def available_projects() -> tuple[Project, ...]:
@@ -164,6 +170,77 @@ class Hero(QWidget):
         painter.drawPath(corners)
 
 
+def initials_badge(project: Project) -> QLabel:
+    initials = label(project.name[0].upper())
+    initials.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    initials.setFixedSize(39, 39)
+    initials.setStyleSheet(
+        f"background: {QColor(53, 36, 61).name()}; color: {QColor(project.accent).name()}; border-radius: 9px;"
+        "font-size: 19px; font-weight: 800;"
+    )
+    return initials
+
+
+class NavButton(QPushButton):
+    """A sidebar tab with a count or progress badge on the right."""
+
+    def __init__(self, title: str):
+        super().__init__()
+        self.setCheckable(True)
+        self.setProperty("nav", True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName(title)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(13, 0, 11, 0)
+        self.title = label(title, "navTitle")
+        self.badge = label("", "navBadge")
+        layout.addWidget(self.title, 1)
+        layout.addWidget(self.badge)
+        for child in (self.title, self.badge):
+            child.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.toggled.connect(self._restyle)
+        self._restyle(False)
+
+    def _restyle(self, checked: bool):
+        self.title.setStyleSheet(f"color: {'#ffb6d2' if checked else '#d1c0d9'}; font-weight: 650;")
+
+    def set_badge(self, text: str):
+        self.badge.setText(text)
+        self.setAccessibleDescription(text)
+
+
+class InstallCard(QFrame):
+    def __init__(self, project: Project, runtime: str):
+        super().__init__()
+        self.project = project
+        self.setObjectName("installCard")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 13, 14, 13)
+        layout.setSpacing(13)
+        layout.addWidget(initials_badge(project), alignment=Qt.AlignmentFlag.AlignTop)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        heading = QHBoxLayout()
+        heading.addWidget(label(project.name, "rowTitle"))
+        heading.addWidget(label(runtime, "rowDetail"), 1, Qt.AlignmentFlag.AlignBottom)
+        self.status = label("", "status")
+        heading.addWidget(self.status)
+        text.addLayout(heading)
+        text.addWidget(label(project.description, "muted", wrap=True))
+        actions = QHBoxLayout()
+        actions.setSpacing(4)
+        self.install = button("Install", primary=True)
+        self.requirements = button("Requirements", quiet=True)
+        self.repository = button("Repository ↗", quiet=True)
+        actions.addWidget(self.install)
+        actions.addWidget(self.requirements)
+        actions.addWidget(self.repository)
+        actions.addStretch()
+        text.addSpacing(6)
+        text.addLayout(actions)
+        layout.addLayout(text, 1)
+
+
 class ProjectRow(QPushButton):
     def __init__(self, project: Project):
         super().__init__()
@@ -179,16 +256,7 @@ class ProjectRow(QPushButton):
         layout.setContentsMargins(12, 9, 12, 9)
         layout.setSpacing(11)
 
-        initials = label(project.name[0].upper())
-        initials.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        initials.setFixedSize(39, 39)
-        accent = QColor(project.accent)
-        tint = QColor(53, 36, 61)
-        initials.setStyleSheet(
-            f"background: {tint.name()}; color: {accent.name()}; border-radius: 9px;"
-            "font-size: 19px; font-weight: 800;"
-        )
-        layout.addWidget(initials)
+        layout.addWidget(initials_badge(project))
         titles = QVBoxLayout()
         titles.setSpacing(1)
         titles.setAlignment(Qt.AlignmentFlag.AlignVCenter)
@@ -260,11 +328,15 @@ class ProjectList(QWidget):
         self.marker.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.marker.hide()
 
-    def _rows(self) -> list[ProjectRow]:
+    def _all_rows(self) -> list[ProjectRow]:
         return [self.entries.itemAt(index).widget() for index in range(self.entries.count())]
 
+    def _rows(self) -> list[ProjectRow]:
+        """Rows of installed layers. The others stay in place, hidden, to keep their saved order."""
+        return [row for row in self._all_rows() if not row.isHidden()]
+
     def projects(self) -> tuple[Project, ...]:
-        return tuple(row.project for row in self._rows())
+        return tuple(row.project for row in self._all_rows())
 
     def _accept_move(self, event) -> bool:
         source = event.source()
@@ -300,8 +372,11 @@ class ProjectList(QWidget):
             self.move_row(event.source(), self._slot_at(event.position().y()))
 
     def move_row(self, row: ProjectRow, slot: int):
+        """Move a row to a position among the visible rows."""
+        visible = self._rows()
         old = self.entries.indexOf(row)
-        destination = slot - (slot > old)
+        target = self.entries.indexOf(visible[slot]) if slot < len(visible) else self.entries.count()
+        destination = target - (target > old)
         if destination != old:
             self.entries.removeWidget(row)
             self.entries.insertWidget(destination, row)
@@ -313,12 +388,15 @@ class Job(QObject):
     state = Signal(str, str)
     update_check = Signal(str, str, str)
     shader_usage = Signal(str, object)
+    # None marks the start of a warm-up, then each parsed progress line follows.
+    progress = Signal(str, object)
+    warmed = Signal(str, str, str)
     complete = Signal(str)
 
     def __init__(
         self, library: Library, projects: tuple[Project, ...], action: str,
         game: str, proton: ProtonInstall | None, prepared_prefix: Path | None, launch_options: str = "",
-        *, console_mode: str | None = None,
+        *, console_mode: str | None = None, warm_jobs: int | None = None, warm_first: bool = False,
     ):
         super().__init__()
         self.library = library
@@ -329,7 +407,30 @@ class Job(QObject):
         self.prepared_prefix = prepared_prefix
         self.launch_options = launch_options
         self.console_mode = console_mode
+        self.warm_jobs = warm_jobs
+        self.warm_first = warm_first
         self.runner = Runner(self.line.emit)
+
+    def _warm(self, project: Project, output) -> None:
+        def watch(message: str):
+            output(message)
+            for line in message.splitlines():
+                if (progress := parse_warmup_progress(line)) is not None:
+                    self.progress.emit(project.key, progress)
+
+        self.state.emit(project.key, "Warming up")
+        self.progress.emit(project.key, None)
+        output("Warming up shaders…\n")
+        self.runner.output = watch
+        try:
+            revision = self.library.warm_up(
+                project, self.game, self.proton, self.runner, prepared_prefix=self.prepared_prefix,
+                options=self.launch_options, console_mode=self.console_mode, jobs=self.warm_jobs,
+            )
+        finally:
+            self.runner.output = output
+        self.warmed.emit(project.key, revision, self.game)
+        output("Shader warm-up finished.\n")
 
     @Slot()
     def execute(self):
@@ -355,7 +456,7 @@ class Job(QObject):
                 for project in self.projects:
                     self.runner.check_cancelled()
                     verb = {
-                        "build": "Building", "update": "Updating", "launch": "Running",
+                        "build": "Building", "update": "Updating", "launch": "Running", "warm": "Warming up",
                         "delete": "Deleting", "check": "Checking",
                         "shader_scan": "Measuring shader cache", "shader_clear": "Clearing shader cache",
                     }[self.action]
@@ -366,7 +467,15 @@ class Job(QObject):
                         if self.action == "check":
                             check = self.library.check_update(project, self.runner)
                             output(f"{check.status}. Upstream commit {check.revision}.\n")
+                        elif self.action == "warm":
+                            self._warm(project, output)
                         elif self.action == "launch":
+                            if self.warm_first:
+                                try:
+                                    self._warm(project, output)
+                                except (OSError, OperationError, ValueError) as error:
+                                    output(f"Shader warm-up did not finish: {error}\nStarting the game.\n")
+                                self.state.emit(project.key, "Running")
                             self.library.launch(
                                 project, self.game, self.proton, self.runner,
                                 prepared_prefix=self.prepared_prefix, options=self.launch_options,
@@ -428,6 +537,7 @@ class Job(QObject):
                 else:
                     result = {
                         "launch": "Launch finished", "delete": "Build removed", "check": "Update check complete",
+                        "warm": "Shader warm-up finished",
                         "shader_scan": "Shader cache measured", "shader_clear": "Shader cache cleanup complete",
                     }.get(self.action, "Build finished")
         except Cancelled as error:
@@ -463,6 +573,12 @@ class MainWindow(QMainWindow):
         self.shader_sizes: dict[str, int] = {}
         self.update_checks: dict[str, tuple[str, str]] = {}
         self.rows: dict[str, ProjectRow] = {}
+        self.install_cards: dict[str, InstallCard] = {}
+        self.warm_tracker = WarmupTracker()
+        self.warm_key: str | None = None
+        self.warm_outcome = ""
+        self._last_result = ""
+        self._installing: set[str] = set()
         self.setWindowTitle("Sunset Launcher")
         self.setWindowIcon(QIcon(sun_logo()))
         self.setMinimumSize(870, 620)
@@ -477,7 +593,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._sidebar())
         layout.addWidget(self.pages, 1)
         self.pages.addWidget(self._library_page())
+        self.pages.addWidget(self._install_page())
+        self.pages.addWidget(self._warmup_page())
         self.pages.addWidget(self._activity_page())
+        self.memory_timer = QTimer(self)
+        self.memory_timer.setInterval(1000)
+        self.memory_timer.timeout.connect(self._update_memory)
+        self.memory_timer.start()
         try:
             prune_run_logs(self.library.data / "logs")
         except OSError as error:
@@ -532,14 +654,12 @@ class MainWindow(QMainWindow):
         layout.addSpacing(12)
 
         self.nav = QButtonGroup(self)
-        for index, title in enumerate(("Library", "Activity")):
-            tab = button(title)
-            tab.setCheckable(True)
-            tab.setProperty("nav", True)
+        for index, title in enumerate(("Library", "Install", "Warm-up", "Activity")):
+            tab = NavButton(title)
             self.nav.addButton(tab, index)
             layout.addWidget(tab)
-        self.nav.button(0).setChecked(True)
-        self.nav.idClicked.connect(self.pages.setCurrentIndex)
+        self.nav.button(LIBRARY_PAGE).setChecked(True)
+        self.nav.idClicked.connect(self._show_page)
 
         layout.addStretch()
         self.launcher_update = button("", quiet=True)
@@ -554,6 +674,12 @@ class MainWindow(QMainWindow):
         data.clicked.connect(lambda: self._open_folder(self.library.data))
         layout.addWidget(data)
         return sidebar
+
+    def _show_page(self, index: int):
+        self.nav.button(index).setChecked(True)
+        self.pages.setCurrentIndex(index)
+        if index == WARMUP_PAGE:
+            self._update_memory()
 
     def _library_page(self) -> QWidget:
         page = QWidget()
@@ -570,12 +696,30 @@ class MainWindow(QMainWindow):
         self.check_updates.clicked.connect(self._check_for_updates)
         header.addWidget(self.check_updates)
         self.update_all = button("Update && build all")
-        self.update_all.setToolTip("Clone missing projects and update projects with an available upstream.")
+        self.update_all.setToolTip("Update and build every installed layer with an available upstream.")
         self.update_all.clicked.connect(lambda: self._start(self._updatable_projects(), "update"))
         header.addWidget(self.update_all)
         layout.addLayout(header)
 
-        grid = QHBoxLayout()
+        self.empty_library = QFrame()
+        self.empty_library.setObjectName("card")
+        empty = QVBoxLayout(self.empty_library)
+        empty.setContentsMargins(22, 20, 22, 20)
+        empty.setSpacing(6)
+        empty.addWidget(label("No layers installed yet", "rowTitle"))
+        empty.addWidget(label(
+            "Open Install to pick a compatibility layer. Once it builds, it appears here with its "
+            "launch, update and shader cache controls.", "muted", wrap=True,
+        ))
+        browse_layers = button("Browse layers", primary=True)
+        browse_layers.clicked.connect(lambda: self._show_page(INSTALL_PAGE))
+        empty.addSpacing(6)
+        empty.addWidget(browse_layers, alignment=Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self.empty_library)
+
+        self.library_grid = QWidget()
+        grid = QHBoxLayout(self.library_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(15)
         self.project_list = ProjectList()
         self.selection = QButtonGroup(self)
@@ -596,7 +740,7 @@ class MainWindow(QMainWindow):
         detail.setMinimumWidth(365)
         # Keep the panel at its natural height when the project list is taller.
         grid.addWidget(detail, 6, Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(grid)
+        layout.addWidget(self.library_grid)
         layout.addStretch()
 
         scroll = QScrollArea()
@@ -627,7 +771,7 @@ class MainWindow(QMainWindow):
         self.checkout = button("Build folder", quiet=True)
         self.checkout.clicked.connect(lambda: self._open_folder(self.library.source(self.selected)))
         setup = button("Build setup", quiet=True)
-        setup.clicked.connect(self._show_setup)
+        setup.clicked.connect(lambda: self._show_setup(self.selected))
         sources.addWidget(self.repository)
         sources.addWidget(setup)
         sources.addWidget(self.checkout)
@@ -658,7 +802,11 @@ class MainWindow(QMainWindow):
         self.clear_shaders = button("Clear cache…", quiet=True)
         self.clear_shaders.setToolTip("Remove generated shaders and pipeline caches for this project.")
         self.clear_shaders.clicked.connect(self._confirm_shader_clear)
+        self.open_warmup = button("Warm up…", quiet=True)
+        self.open_warmup.setToolTip("Compile this layer's shaders for the shared game before playing.")
+        self.open_warmup.clicked.connect(lambda: self._open_warmup(self.selected))
         cache.addWidget(self.shader_cache_size, 1)
+        cache.addWidget(self.open_warmup)
         cache.addWidget(self.measure_shaders)
         cache.addWidget(self.clear_shaders)
         layout.addLayout(cache)
@@ -723,6 +871,157 @@ class MainWindow(QMainWindow):
         launch_row.addStretch()
         layout.addLayout(launch_row)
         return detail
+
+    @staticmethod
+    def _scroll(page: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        return scroll
+
+    def _install_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("installPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 23, 24, 23)
+        layout.setSpacing(12)
+        layout.addWidget(label("Install a layer", "sectionTitle"))
+        layout.addWidget(label(
+            "Each layer is cloned from its upstream repository and built with your local tools. "
+            "Open Requirements first to see what it needs. A layer moves to your library once it builds.",
+            "muted", wrap=True,
+        ))
+        layout.addSpacing(4)
+        for project in available_projects():
+            card = InstallCard(project, self._runtime_name(project))
+            card.install.clicked.connect(lambda checked=False, item=project: self._install(item))
+            card.requirements.clicked.connect(lambda checked=False, item=project: self._show_setup(item))
+            card.repository.clicked.connect(lambda checked=False, item=project: open_url(QUrl(item.repository)))
+            self.install_cards[project.key] = card
+            layout.addWidget(card)
+        self.all_installed = label("Every available layer is installed. Delete a build to move it back here.", "muted", wrap=True)
+        layout.addWidget(self.all_installed)
+        layout.addStretch()
+        return self._scroll(page)
+
+    def _warmup_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("warmupPage")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(24, 23, 24, 23)
+        layout.setSpacing(12)
+        layout.addWidget(label("Shader warm-up", "sectionTitle"))
+        layout.addWidget(label(
+            "Compile a game's shaders before you play, so it stutters less while they build. Each layer runs its "
+            "own warm-up with the same Proton prefix, shader cache and settings as Launch.",
+            "muted", wrap=True,
+        ))
+        layout.addSpacing(4)
+
+        target = QFrame()
+        target.setObjectName("card")
+        form = QGridLayout(target)
+        form.setContentsMargins(15, 13, 15, 13)
+        form.setHorizontalSpacing(14)
+        form.setVerticalSpacing(9)
+        layer_title = label("Layer")
+        layer_title.setProperty("fieldLabel", True)
+        self.warm_layer = QComboBox()
+        layer_title.setBuddy(self.warm_layer)
+        self.warm_layer.activated.connect(self._warm_layer_chosen)
+        form.addWidget(layer_title, 0, 0)
+        form.addWidget(self.warm_layer, 0, 1, 1, 2)
+        game_title = label("Game")
+        game_title.setProperty("fieldLabel", True)
+        self.warm_game = label("", "muted")
+        self.warm_game.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.warm_change_game = button("Change…", quiet=True)
+        self.warm_change_game.clicked.connect(lambda: self._browse_game(self.warm_change_game))
+        form.addWidget(game_title, 1, 0)
+        form.addWidget(self.warm_game, 1, 1)
+        form.addWidget(self.warm_change_game, 1, 2)
+        self.warm_note = label("", "note", wrap=True)
+        form.addWidget(self.warm_note, 2, 0, 1, 3)
+        form.setColumnStretch(1, 1)
+        layout.addWidget(target)
+
+        card = QFrame()
+        card.setObjectName("warmCard")
+        progress = QVBoxLayout(card)
+        progress.setContentsMargins(16, 14, 16, 15)
+        progress.setSpacing(9)
+        top = QHBoxLayout()
+        self.warm_title = label("Ready to warm up", "rowTitle")
+        self.warm_subject = label("", "muted")
+        self.warm_percent = label("", "warmPercent")
+        self.warm_button = button("Warm up", primary=True)
+        self.warm_button.setMinimumWidth(92)
+        self.warm_button.clicked.connect(self._warm_button_clicked)
+        top.addWidget(self.warm_title)
+        top.addWidget(self.warm_subject, 1, Qt.AlignmentFlag.AlignBottom)
+        top.addWidget(self.warm_percent)
+        top.addSpacing(8)
+        top.addWidget(self.warm_button)
+        progress.addLayout(top)
+        self.warm_bar = QProgressBar()
+        self.warm_bar.setTextVisible(False)
+        self.warm_bar.setFixedHeight(6)
+        self.warm_bar.setRange(0, 1000)
+        self.warm_bar.setValue(0)
+        progress.addWidget(self.warm_bar)
+        self.warm_stage = label("", "status")
+        progress.addWidget(self.warm_stage)
+        stats = QHBoxLayout()
+        stats.setSpacing(10)
+        self.warm_stats: dict[str, QLabel] = {}
+        self.warm_captions: dict[str, QLabel] = {}
+        for key, caption in (("done", "Done"), ("speed", "Speed"), ("left", "Time left"),
+                             ("free", "Free RAM"), ("used", "Warm-up RAM")):
+            column = QVBoxLayout()
+            column.setSpacing(1)
+            self.warm_captions[key] = label(caption, "statCaption")
+            self.warm_stats[key] = label("—", "statValue")
+            column.addWidget(self.warm_captions[key])
+            column.addWidget(self.warm_stats[key])
+            stats.addLayout(column, 1)
+        progress.addLayout(stats)
+        layout.addWidget(card)
+
+        settings = QFrame()
+        settings.setObjectName("card")
+        options = QGridLayout(settings)
+        options.setContentsMargins(15, 13, 15, 13)
+        options.setHorizontalSpacing(14)
+        options.setVerticalSpacing(4)
+        jobs_title = label("Parallel compiles")
+        jobs_title.setProperty("fieldLabel", True)
+        options.addWidget(jobs_title, 0, 0)
+        options.addWidget(label(
+            "Each compile can hold over a gigabyte of RAM in the driver. Lower this if free RAM runs low.",
+            "muted", wrap=True,
+        ), 1, 0)
+        self.warm_jobs = QComboBox()
+        jobs_title.setBuddy(self.warm_jobs)
+        for jobs in WARMUP_JOBS:
+            self.warm_jobs.addItem("Automatic" if jobs == 0 else str(jobs), jobs)
+        saved_jobs = self.settings.value("warmup/jobs", 0, type=int)
+        self.warm_jobs.setCurrentIndex(max(0, self.warm_jobs.findData(saved_jobs)))
+        self.warm_jobs.activated.connect(lambda: self.settings.setValue("warmup/jobs", self.warm_jobs.currentData()))
+        options.addWidget(self.warm_jobs, 0, 1, 2, 1, Qt.AlignmentFlag.AlignVCenter)
+        options.addWidget(rule(), 2, 0, 1, 2)
+        self.warm_before_launch = QCheckBox("Warm up before launch after an update")
+        self.warm_before_launch.setChecked(self.settings.value("warmup/beforeLaunch", True, type=bool))
+        self.warm_before_launch.toggled.connect(lambda on: self.settings.setValue("warmup/beforeLaunch", on))
+        options.addWidget(self.warm_before_launch, 3, 0, 1, 2)
+        options.addWidget(label(
+            "Launch first runs the warm-up when the layer was rebuilt or the shared game changed since the last one, "
+            "and skips it when nothing changed.", "muted", wrap=True,
+        ), 4, 0, 1, 2)
+        options.setColumnStretch(0, 1)
+        layout.addWidget(settings)
+        layout.addStretch()
+        return self._scroll(page)
 
     def _activity_page(self) -> QWidget:
         page = QWidget()
@@ -796,7 +1095,27 @@ class MainWindow(QMainWindow):
     def _save_launch_options(self):
         self.settings.setValue(f"launchOptions/{self.selected.key}", self.launch_options.text().strip())
 
+    def _installed(self, project: Project) -> bool:
+        return recipe_for(project) is not None and self.library.revision(project) is not None
+
+    def _installed_projects(self) -> tuple[Project, ...]:
+        return tuple(project for project in self.project_list.projects() if self._installed(project))
+
     def _refresh(self):
+        installed = self._installed_projects()
+        for project in self.project_list.projects():
+            self.rows[project.key].setVisible(project in installed)
+        if installed and self.selected not in installed:
+            # A deleted build leaves the library. Show the next installed layer instead.
+            self._select(installed[0])
+            return
+        self.empty_library.setVisible(not installed)
+        self.library_grid.setVisible(bool(installed))
+        self._refresh_install_cards(installed)
+        self._refresh_warmup_layers(installed)
+        self.nav.button(LIBRARY_PAGE).set_badge(str(len(installed)) if installed else "")
+        waiting = sum(not card.isHidden() for card in self.install_cards.values())
+        self.nav.button(INSTALL_PAGE).set_badge(str(waiting) if waiting else "")
         for project in self.project_list.projects():
             revision = self.library.revision(project)
             recipe = recipe_for(project)
@@ -820,6 +1139,159 @@ class MainWindow(QMainWindow):
         )
         self.prefix.setToolTip(str(prepared) if prepared is not None else "")
         self._refresh_actions()
+
+    def _refresh_install_cards(self, installed: tuple[Project, ...]):
+        for key, card in self.install_cards.items():
+            project = card.project
+            card.setVisible(project not in installed)
+            state = self.states.get(key, "")
+            has_checkout = (self.library.source(project) / ".git").exists()
+            if project.upstream_unavailable and not has_checkout:
+                status = "Upstream unavailable"
+            elif state:
+                status = state
+            else:
+                status = "Downloaded, not built" if has_checkout else ""
+            card.status.setText(status)
+            card.install.setText("Retry" if state in {"Failed", "Needs setup", "Stopped"} or has_checkout else "Install")
+            card.install.setToolTip(project.upstream_unavailable or "Clone the upstream source and build it.")
+            card.repository.setEnabled(not project.upstream_unavailable)
+        self.all_installed.setVisible(all(card.isHidden() for card in self.install_cards.values()))
+
+    def _refresh_warmup_layers(self, installed: tuple[Project, ...]):
+        layers = [project for project in installed if (recipe := recipe_for(project)) and recipe.warmup]
+        current = self.warm_layer.currentData()
+        self.warm_layer.blockSignals(True)
+        self.warm_layer.clear()
+        for project in layers:
+            self.warm_layer.addItem(project.name, project)
+        if not layers:
+            self.warm_layer.addItem("No installed layer has a warm-up")
+        preferred = self.warm_key and next((p for p in layers if p.key == self.warm_key), None)
+        chosen = preferred or (current if current in layers else self.selected if self.selected in layers else None)
+        if chosen is not None:
+            self.warm_layer.setCurrentIndex(layers.index(chosen))
+        self.warm_layer.blockSignals(False)
+        self._update_warm_card()
+
+    def _warm_layer_chosen(self):
+        project = self.warm_layer.currentData()
+        if project is not None and project != self.selected:
+            # Warm-up uses the layer's own Proton, prefix and launch settings, which follow the selection.
+            self._select(project)
+        self._update_warm_card()
+
+    def _open_warmup(self, project: Project):
+        self._show_page(WARMUP_PAGE)
+        index = self.warm_layer.findText(project.name)
+        if index >= 0:
+            self.warm_layer.setCurrentIndex(index)
+        self._update_warm_card()
+
+    def _install(self, project: Project):
+        self._installing.add(project.key)
+        self._start((project,), "build")
+
+    def _warm_key(self, project: Project) -> str:
+        return f"warmup/{project.key}"
+
+    def _last_warmup(self, project: Project) -> tuple[str, str, str]:
+        key = self._warm_key(project)
+        return tuple(self.settings.value(f"{key}/{name}", "", type=str) for name in ("revision", "game", "time"))
+
+    def _needs_warmup(self, project: Project, game: str) -> bool:
+        recipe = recipe_for(project)
+        if recipe is None or not recipe.warmup:
+            return False
+        revision, warmed_game, _ = self._last_warmup(project)
+        return revision != self.library.revision(project) or warmed_game != game
+
+    def _warm_button_clicked(self):
+        if self.warm_key is not None:
+            self._stop()
+            return
+        project = self.warm_layer.currentData()
+        if project is not None:
+            if project != self.selected:
+                self._select(project)
+            self._start((project,), "warm")
+
+    def _update_memory(self):
+        if self.pages.currentIndex() != WARMUP_PAGE and self.warm_key is None:
+            return
+        if self.warm_key is not None:
+            # Elapsed time and the estimate move on between Victory's ten-second progress lines.
+            self._update_warm_card()
+        self.warm_stats["free"].setText(format_bytes(available_memory()))
+        pid = self.worker.runner.pid if self.warm_key is not None and self.worker is not None else None
+        used = process_group_memory(pid) if pid else None
+        self.warm_stats["used"].setText(format_bytes(used) if used is not None else "—")
+
+    def _update_warm_card(self):
+        if not hasattr(self, "warm_button"):
+            return
+        project = next((item for item in PROJECTS if item.key == self.warm_key), None) or self.warm_layer.currentData()
+        recipe = recipe_for(project) if project is not None else None
+        game = self.game.text().strip()
+        self.warm_game.setText(game or "Choose a shared game path in Library or with Change…")
+        self.warm_game.setToolTip(game)
+        active = self.warm_key is not None
+        tracker = self.warm_tracker
+        progress = tracker.progress if active or self.warm_outcome else None
+        kind = recipe.warmup_progress if recipe is not None else "none"
+        self.warm_note.setText({
+            "total": "Shows overall progress and time left.",
+            "file": "Works through the game's files one at a time. Progress and time left are for the current file.",
+            "count": "Reports how many shaders are cached so far, without a total, so there is no time left estimate.",
+            "none": "Prepares shaders with its own per-title profiles and reports no counts. Follow it in Activity.",
+        }[kind] if recipe is not None and recipe.warmup else "Install XCL, Victory, AvatarManz, Cool Fox or TuxBox to warm up shaders.")
+        self.warm_captions["left"].setText("Time left (file)" if kind == "file" else "Time left")
+        self.warm_subject.setText(project.name if project is not None else "")
+        if active:
+            self.warm_title.setText("Warming up shaders")
+        elif self.warm_outcome:
+            self.warm_title.setText(self.warm_outcome)
+        else:
+            self.warm_title.setText("Ready to warm up")
+        fraction = tracker.fraction if progress is not None else None
+        if active and fraction is None:
+            self.warm_bar.setRange(0, 0)
+            self.warm_percent.setText("")
+        else:
+            self.warm_bar.setRange(0, 1000)
+            if self.warm_outcome == "Warm-up finished" and fraction is None:
+                fraction = 1.0
+            self.warm_bar.setValue(int((fraction or 0) * 1000))
+            self.warm_percent.setText(f"{fraction:.0%}" if fraction is not None else "")
+        if progress is not None:
+            unit = progress.unit
+            done = f"{progress.done:,} / {progress.total:,}" if progress.total is not None else f"{progress.done:,}"
+            self.warm_stats["done"].setText(done)
+            speed = tracker.speed
+            self.warm_stats["speed"].setText(f"{speed:,.0f} {unit}/s" if speed is not None else "—")
+            self.warm_stats["left"].setText(format_duration(tracker.seconds_left) if active else "—")
+        else:
+            for key in ("done", "speed", "left"):
+                self.warm_stats[key].setText("—")
+        if active:
+            stage = (progress.stage, progress.unit) if progress is not None else ("Starting",)
+            self.warm_stage.setText(" · ".join(filter(None, (*stage, f"{format_duration(tracker.elapsed)} elapsed"))))
+        elif project is not None:
+            revision, warmed_game, when = self._last_warmup(project)
+            if revision and warmed_game == game and revision == self.library.revision(project):
+                self.warm_stage.setText(f"Warmed up for this game on {when}. Run it again to pick up new shaders.")
+            elif revision and warmed_game == game:
+                self.warm_stage.setText("The layer changed since its last warm-up for this game.")
+            else:
+                self.warm_stage.setText("Not warmed up for this game yet.")
+        else:
+            self.warm_stage.setText("")
+        self.warm_button.setText("Cancel" if active else "Warm up")
+        self.warm_button.setObjectName("" if active else "primary")
+        self.warm_button.style().unpolish(self.warm_button)
+        self.warm_button.style().polish(self.warm_button)
+        badge = (f"{fraction:.0%}" if fraction is not None else "…") if active else ""
+        self.nav.button(WARMUP_PAGE).set_badge(badge)
 
     @Slot()
     def _refresh_actions(self):
@@ -850,6 +1322,24 @@ class MainWindow(QMainWindow):
             "Shader cache" if cache_size is None else f"Shader cache · {QLocale().formattedDataSize(cache_size, 1)}"
         )
         self.measure_shaders.setEnabled(can_start_job and cache_supported)
+        self.open_warmup.setVisible(recipe is not None and bool(recipe.warmup))
+        for card in self.install_cards.values():
+            unavailable = card.project.upstream_unavailable and not (self.library.source(card.project) / ".git").exists()
+            card.install.setEnabled(can_start_job and recipe_for(card.project) is not None and not unavailable)
+        if hasattr(self, "warm_button"):
+            layer = self.warm_layer.currentData()
+            layer_recipe = recipe_for(layer) if layer is not None else None
+            warm_ready = (
+                can_start_job and layer is not None and has_game
+                and (layer_recipe.runtime != "proton" or self._chosen_proton() is not None)
+            )
+            self.warm_button.setEnabled(self.warm_key is not None or bool(warm_ready))
+            self.warm_button.setToolTip(
+                "Stop the warm-up." if self.warm_key is not None
+                else "Choose a shared game path first." if not has_game
+                else "Select a Proton version for this layer in Library." if layer_recipe and layer_recipe.runtime == "proton" and self._chosen_proton() is None
+                else "Compile this layer's shaders for the shared game."
+            )
         self.clear_shaders.setEnabled(can_start_job and cache_supported and bool(cache_size))
         self.proton.setEnabled(self.proton.count() > 1)
         can_launch = can_start_job and recipe is not None and ready and has_game and (recipe.runtime != "proton" or proton is not None)
@@ -876,10 +1366,11 @@ class MainWindow(QMainWindow):
         self.game.setPlaceholderText("Choose a game executable for all projects…")
         self.game.setToolTip("All projects share this path. XCL and TuxBox can also use a game folder.")
         self.game.textChanged.connect(self._refresh_actions)
+        self.game.textChanged.connect(self._update_warm_card)
         self.game.editingFinished.connect(self._save_game)
         controls.addWidget(self.game, 1)
         self.browse = button("Browse…")
-        self.browse.clicked.connect(self._browse_game)
+        self.browse.clicked.connect(lambda: self._browse_game(self.browse))
         controls.addWidget(self.browse)
         return controls
 
@@ -905,10 +1396,7 @@ class MainWindow(QMainWindow):
         self.settings.sync()
 
     def _updatable_projects(self) -> tuple[Project, ...]:
-        return tuple(
-            project for project in self.project_list.projects()
-            if recipe_for(project) is not None and not project.upstream_unavailable
-        )
+        return tuple(project for project in self._installed_projects() if not project.upstream_unavailable)
 
     def _built_projects(self) -> tuple[Project, ...]:
         return tuple(project for project in self._updatable_projects() if self.library.revision(project))
@@ -917,10 +1405,7 @@ class MainWindow(QMainWindow):
         self._start(self._built_projects(), "check")
 
     def _cached_projects(self) -> tuple[Project, ...]:
-        return tuple(
-            project for project in self.project_list.projects()
-            if (recipe := recipe_for(project)) is not None and recipe.shader_cache is not None
-        )
+        return tuple(project for project in self._installed_projects() if recipe_for(project).shader_cache is not None)
 
     @Slot()
     def _check_for_updates_on_startup(self):
@@ -966,11 +1451,12 @@ class MainWindow(QMainWindow):
         if box.clickedButton() is clear:
             self._start((project,), "shader_clear")
 
-    def _browse_game(self):
+    def _browse_game(self, anchor: QWidget | None = None):
+        anchor = anchor or self.browse
         menu = QMenu(self)
         menu.addAction("Choose a game executable…", lambda: self._pick_game(False))
         menu.addAction("Choose a game folder…", lambda: self._pick_game(True))
-        menu.exec(self.browse.mapToGlobal(self.browse.rect().bottomLeft()))
+        menu.exec(anchor.mapToGlobal(anchor.rect().bottomLeft()))
 
     def _pick_game(self, directory: bool):
         existing = self.game.text().strip()
@@ -1071,8 +1557,7 @@ class MainWindow(QMainWindow):
         self.settings.setValue(f"winePrefix/{self.selected.key}", path)
         self._refresh()
 
-    def _show_setup(self):
-        project = self.selected
+    def _show_setup(self, project: Project):
         recipe = recipe_for(project)
         box = QMessageBox(self)
         box.setWindowTitle(f"{project.name} setup")
@@ -1118,7 +1603,7 @@ class MainWindow(QMainWindow):
         self._save_launch_options()
         game = self.game.text().strip()
         options = self.launch_options.text().strip()
-        if action == "launch":
+        if action in {"launch", "warm"}:
             try:
                 self.library.game_path(projects[0], game)
             except (OperationError, OSError, ValueError) as error:
@@ -1129,9 +1614,13 @@ class MainWindow(QMainWindow):
             except OperationError as error:
                 QMessageBox.warning(self, "Launch options", str(error))
                 return
+        uses_layer = action in {"launch", "warm"}
+        jobs = self.warm_jobs.currentData() or None
         job = Job(
             self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix(), options,
-            console_mode=self.console_mode.currentData() if action == "launch" else None,
+            console_mode=self.console_mode.currentData() if uses_layer else None,
+            warm_jobs=jobs if uses_layer else None,
+            warm_first=action == "launch" and self.warm_before_launch.isChecked() and self._needs_warmup(projects[0], game),
         )
         if self.thread is not None:
             self._job_after_startup_check = job
@@ -1164,6 +1653,8 @@ class MainWindow(QMainWindow):
         self.worker.state.connect(self._job_state)
         self.worker.update_check.connect(self._job_update_check)
         self.worker.shader_usage.connect(self._job_shader_usage)
+        self.worker.progress.connect(self._job_progress)
+        self.worker.warmed.connect(self._job_warmed)
         self.worker.complete.connect(self._job_complete)
         self.worker.complete.connect(self.thread.quit)
         self.thread.finished.connect(self.worker.deleteLater)
@@ -1182,10 +1673,32 @@ class MainWindow(QMainWindow):
         if follow:
             bar.setValue(bar.maximum())
 
+    @Slot(str, object)
+    def _job_progress(self, key: str, progress: WarmupProgress | None):
+        if progress is None:
+            self.warm_key = key
+            self.warm_outcome = ""
+            self.warm_tracker.reset()
+            self._refresh_warmup_layers(self._installed_projects())
+        else:
+            self.warm_tracker.update(progress)
+        self._update_warm_card()
+        self._update_memory()
+
+    @Slot(str, str, str)
+    def _job_warmed(self, key: str, revision: str, game: str):
+        prefix = f"warmup/{key}"
+        self.settings.setValue(f"{prefix}/revision", revision)
+        self.settings.setValue(f"{prefix}/game", game)
+        self.settings.setValue(f"{prefix}/time", QLocale().toString(QDateTime.currentDateTime(), QLocale.FormatType.ShortFormat))
+        self.warm_outcome = "Warm-up finished"
+        self.warm_key = None
+        self._update_warm_card()
+
     @Slot(str, str)
     def _job_state(self, key: str, state: str):
         self.states[key] = state
-        if state in {"Building", "Updating", "Running", "Deleting", "Checking"}:
+        if state in {"Building", "Updating", "Running", "Deleting", "Checking", "Warming up"}:
             name = next(project.name for project in PROJECTS if project.key == key)
             self.summary.setText(f"{state} {name}")
         self._refresh()
@@ -1196,6 +1709,7 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _job_complete(self, result: str):
+        self._last_result = result
         self.summary.setText(result)
         self._write_log(f"\n{result}.\n")
 
@@ -1214,6 +1728,15 @@ class MainWindow(QMainWindow):
         self._startup_check_running = False
         self.states = {key: state for key, state in self.states.items() if state in {"Failed", "Needs setup", "Stopped"}}
         self.stop.setEnabled(False)
+        if self.warm_key is not None:
+            # The warm-up ended without finishing: stopped, failed, or skipped by its launch.
+            self.warm_outcome = "Warm-up stopped" if self._last_result == "Stopped" else "Warm-up did not finish"
+            self.warm_key = None
+        newly_installed = [key for key in self._installing if self.library.revision(self._project(key)) is not None]
+        self._installing.clear()
+        if newly_installed:
+            self.summary.setText(f"{self._project(newly_installed[-1]).name} installed. It's in your library now.")
+            self._select(self._project(newly_installed[-1]))
         if self._close_after_startup_check:
             self._close_after_startup_check = False
             self.close()
@@ -1227,6 +1750,10 @@ class MainWindow(QMainWindow):
             if self.thread is not None:
                 return
         self._refresh()
+
+    @staticmethod
+    def _project(key: str) -> Project:
+        return next(project for project in PROJECTS if project.key == key)
 
     def _stop(self):
         if self.worker is not None:
