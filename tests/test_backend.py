@@ -44,13 +44,13 @@ class RecipeTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(
                 [recipe_for(project).runtime for project in PROJECTS],
-                ["proton", "proton", "managed", "proton", "proton", "proton", "proton"],
+                ["proton", "proton", "managed", "proton", "proton", "proton", "proton", "proton"],
             )
         with patch.object(sys, "platform", "win32"):
             self.assertEqual(
                 {project.key: recipe_for(project) and recipe_for(project).runtime for project in PROJECTS},
                 {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native",
-                 "dexnom": "native", "avatarmanz": "native", "cool_fox": "native"},
+                 "dexnom": "native", "avatarmanz": "native", "cool_fox": "native", "scarlett_3070": "native"},
             )
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
@@ -108,6 +108,7 @@ class RecipeTests(unittest.TestCase):
         }
         self.assertEqual(kinds, {
             "xcl": {"total"}, "victory": {"file"}, "tuxbox": {"none"}, "avatarmanz": {"count"}, "cool_fox": {"count"},
+            "scarlett_3070": {"count"},
         })
         values = {"artifact": "layer.exe", "game": "Game.exe", "game_dir": "Games", "venv_python": "python"}
         self.assertEqual(expand_command(recipe_for_host("xcl", "linux").warmup, values),
@@ -126,9 +127,9 @@ class RecipeTests(unittest.TestCase):
     def test_console_choices_per_layer(self):
         modes = {project.key: {recipe.console_modes for recipe in project.recipes.values()} for project in PROJECTS}
         self.assertEqual(modes["xcl"], {("auto", "series-x", "series-s")})
-        self.assertEqual(modes["cool_fox"], {("series-s", "series-x")})
+        self.assertEqual(modes["scarlett_3070"], {("series-s", "series-x")})
         self.assertEqual(modes["tuxbox"], {()})
-        for key in ("victory", "hyphennn", "dexnom", "avatarmanz"):
+        for key in ("victory", "hyphennn", "dexnom", "avatarmanz", "cool_fox"):
             self.assertEqual(modes[key], {("series-x", "series-s")}, key)
         xcl = recipe_for_host("xcl", "windows")
         self.assertEqual((xcl.console_env, dict(xcl.console_env_values)),
@@ -144,6 +145,7 @@ class RecipeTests(unittest.TestCase):
             "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-s", "--unimplemented", "trap", "--flag", "value"],
             "avatarmanz": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "cool_fox": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
+            "scarlett_3070": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "tuxbox": ["python", "tuxbox.py", "run", "--flag", "value", "Game.exe"],
         }
         for project in PROJECTS:
@@ -161,8 +163,30 @@ class RecipeTests(unittest.TestCase):
                 self.assertEqual(recipe.artifact, f"target/{target}release/victory.exe")
                 self.assertIn("--release", recipe.steps[0].command)
                 self.assertIn("--locked", recipe.steps[0].command)
-                self.assertEqual(recipe.console_modes, ("series-s", "series-x"))
-                self.assertEqual(dict(recipe.launch_env)["VICTORY_CARD_BUFFERS_MIN_KB"], "64")
+                self.assertEqual(recipe.console_modes, ("series-x", "series-s"))
+                env = dict(recipe.launch_env)
+                self.assertEqual(env["VICTORY_CARD_BUFFERS_MIN_KB"], "64")
+                # Upstream turns these off on NVIDIA: skin goes undrawn and video frames repeat.
+                self.assertEqual((env["VICTORY_THIN"], env["VICTORY_JOIN_PARTS"]), ("0", "0"))
+                self.assertEqual(env["VICTORY_AMBIENT"], "constant:0.8")
+                self.assertEqual(dict(recipe.launch_paths), {"VICTORY_CACHE_DIR": "cache", "VICTORY_DATA_DIR": "data"})
+
+    def test_scarlett_3070_uses_its_launcher_settings(self):
+        project = next(project for project in PROJECTS if project.key == "scarlett_3070")
+        self.assertEqual(project.repository, "https://github.com/Yaekai/victory-scarlett-3070")
+        self.assertTrue(project.setup_url.startswith(project.repository))
+        for host, target in (("linux", "x86_64-pc-windows-msvc/"), ("windows", "")):
+            with self.subTest(host=host):
+                recipe = project.recipes[host]
+                self.assertEqual(recipe.artifact, f"target/{target}release/victory.exe")
+                self.assertIn("--locked", recipe.steps[0].command)
+                self.assertEqual(recipe.warmup[1], "shaders")
+                env = dict(recipe.launch_env)
+                self.assertEqual(len(env), len(recipe.launch_env), "a setting is listed twice")
+                self.assertEqual((env["VICTORY_TEXTURE_MIP_DROP"], env["VICTORY_CARD_BUFFERS_MB"]), ("1", "1024"))
+                self.assertEqual(env["VICTORY_LEAVE_OUT"], "02384a60fda6f2d0,5dc3b25986622949,6f225b641c5b0708")
+                self.assertNotIn("VICTORY_GAME_DIR", env)
+                self.assertIn("VICTORY_TEXTURE_MIP_DROP=0", recipe.launch_note)
                 self.assertEqual(dict(recipe.launch_paths), {"VICTORY_CACHE_DIR": "cache", "VICTORY_DATA_DIR": "data"})
 
 
@@ -327,9 +351,9 @@ class LibraryTests(unittest.TestCase):
             patch.object(runner, "run") as run,
         ):
             self.library.launch(project, str(self.game), None, runner)
-            self.assertEqual(run.call_args.args[0][3:], ["--console", "series-s", "--execute"])
-            self.library.launch(project, str(self.game), None, runner, console_mode="series-x", options="-- --console=game")
-            self.assertEqual(run.call_args.args[0][3:], ["--console", "series-x", "--execute", "--", "--console=game"])
+            self.assertEqual(run.call_args.args[0][3:], ["--console", "series-x", "--execute"])
+            self.library.launch(project, str(self.game), None, runner, console_mode="series-s", options="-- --console=game")
+            self.assertEqual(run.call_args.args[0][3:], ["--console", "series-s", "--execute", "--", "--console=game"])
             with self.assertRaisesRegex(OperationError, "Choose the console mode in the selector"):
                 self.library.launch(project, str(self.game), None, runner, options="--console=series-x")
             self.assertEqual(run.call_count, 2)

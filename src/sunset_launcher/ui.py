@@ -14,7 +14,7 @@ from pathlib import Path
 from PySide6.QtCore import QDateTime, QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, QTimer, Qt, QUrl, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QLineEdit, QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -910,12 +910,7 @@ class MainWindow(QMainWindow):
         grid.addLayout(column, 6)
         layout.addWidget(self.library_grid)
         layout.addStretch()
-
-        scroll = QScrollArea()
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(page)
-        return scroll
+        return self._scroll(page)
 
     def _details(self) -> QFrame:
         detail = QFrame()
@@ -948,7 +943,10 @@ class MainWindow(QMainWindow):
         setup.clicked.connect(lambda: self._show_setup(self.selected))
         self.checkout = button("Build folder", quiet=True)
         self.checkout.clicked.connect(lambda: self._open_folder(self.library.source(self.selected)))
-        for link in (self.repository, setup, self.checkout):
+        self.preset = button("Preset", quiet=True)
+        self.preset.setToolTip("Show the settings this layer launches with. Launch options override them.")
+        self.preset.clicked.connect(lambda: self._show_preset(self.selected))
+        for link in (self.repository, setup, self.checkout, self.preset):
             link.setProperty("link", True)
             sources.addWidget(link)
         sources.addStretch()
@@ -1067,7 +1065,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(label("Install a layer", "sectionTitle"))
         layout.addWidget(label(
             "Each layer is cloned from its upstream repository and built with your local tools. "
-            "Open Requirements first to see what it needs. A layer moves to your library once it builds.",
+            + ("The launcher sets up any missing build tools first. " if sys.platform == "win32"
+               else "Open Requirements first to see what it needs. ")
+            + "A layer moves to your library once it builds.",
             "muted", wrap=True,
         ))
         layout.addSpacing(4)
@@ -1255,6 +1255,7 @@ class MainWindow(QMainWindow):
         self.note.setVisible(bool(note))
         self.repository.setEnabled(not project.upstream_unavailable)
         self.repository.setToolTip(project.upstream_unavailable)
+        self.preset.setVisible(recipe is not None and bool(recipe.launch_env))
         self._restore_proton()
         modes = recipe.console_modes if recipe is not None else ()
         self.console_mode_box.setVisible(bool(modes))
@@ -1820,6 +1821,42 @@ class MainWindow(QMainWindow):
             open_url(QUrl(project.setup_url))
         elif recipe is not None and title_guide is not None and box.clickedButton() is title_guide:
             open_url(QUrl(recipe.launch_url))
+
+    def _show_preset(self, project: Project):
+        """List a layer's built-in settings, so Launch options can override one knowingly."""
+        recipe = recipe_for(project)
+        if recipe is None or not recipe.launch_env:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"{project.name} preset")
+        dialog.resize(560, 520)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(label(
+            f"{project.name} launches with these {len(recipe.launch_env)} settings from its upstream launcher. "
+            "To change one, add it with a new value to Launch options, such as VICTORY_LOG=warn.",
+            "muted", wrap=True,
+        ))
+        try:
+            overrides = parse_launch_options(self.settings.value(f"launchOptions/{project.key}", "", type=str))[0]
+        except OperationError:
+            overrides = {}
+        lines = [
+            f"{key}={overrides[key]}    (yours, preset {value})" if key in overrides else f"{key}={value}"
+            for key, value in recipe.launch_env
+        ]
+        listing = QPlainTextEdit("\n".join(lines))
+        listing.setObjectName("log")
+        listing.setReadOnly(True)
+        listing.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        layout.addWidget(listing, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        copy = buttons.addButton("Copy all", QDialogButtonBox.ButtonRole.ActionRole)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(
+            " ".join(f"{key}={value}" for key, value in recipe.launch_env)
+        ))
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
     def _open_folder(self, path: Path, *, create: bool = False):
         try:

@@ -330,15 +330,17 @@ AVATARMANZ_RECIPES = {
 # The original codec-d/cool_fox repository is unavailable. This mirror has the same history.
 COOL_FOX_REPOSITORY = "https://github.com/DoubleGhosty/cool_fox"
 COOL_FOX_PREVIOUS = ("https://github.com/codec-d/cool_fox",)
-# Renderer settings from upstream's pareto-residency profile. RUST_LOG is a fallback for VICTORY_LOG.
+# Renderer settings from upstream's Play-VIctory.cmd (pareto-residency). Upstream keeps THIN and JOIN_PARTS off on
+# NVIDIA, where they leave skin undrawn and repeat video frames, and the renderer ports off on 8 GB cards.
 COOL_FOX_LAUNCH_ENV = (
     ("VICTORY_AMBIENT_AIR", "1.5"), ("VICTORY_TEXTURE_NO_WAIT", "1"), ("VICTORY_RELAY", "2"),
     ("VICTORY_WIDE_BACK", "1"), ("VICTORY_CARD_REHASH_RUNS", "1"), ("VICTORY_JOIN_COPIES", "1"),
     ("VICTORY_INDIRECT_WINDOW", "1"), ("VICTORY_RELAY_COPY", "1"), ("VICTORY_CARD_STEPS", "2"),
     ("VICTORY_INDIRECT_BATCH", "2"), ("VICTORY_MAP_THREADS", "1"), ("VICTORY_CARD_AWAKE", "1"),
-    ("VICTORY_SHOW_AFTER", "1"), ("VICTORY_AMBIENT", "0.8"), ("VICTORY_THIN", "1"),
-    ("VICTORY_JOIN_PARTS", "8"), ("VICTORY_UPLOAD_AHEAD", "1"), ("VICTORY_LEVELS_ON_DEMAND", "1"),
-    ("VICTORY_CARD_BUFFERS_MIN_KB", "64"), ("RUST_LOG", "warn"),
+    ("VICTORY_SHOW_AFTER", "1"), ("VICTORY_AMBIENT", "constant:0.8"), ("VICTORY_TEXTURE_GUARD", "0"),
+    ("VICTORY_THIN", "0"), ("VICTORY_JOIN_PARTS", "0"), ("VICTORY_PORT_CONSTANTS", "0"), ("VICTORY_PORT_CBV", "0"),
+    ("VICTORY_LIBRARY_STORE_LATER", "1"), ("VICTORY_PIPELINE_WAIT_MS", "0"), ("VICTORY_UPLOAD_AHEAD", "1"),
+    ("VICTORY_LEVELS_ON_DEMAND", "1"), ("VICTORY_CARD_BUFFERS_MIN_KB", "64"), ("VICTORY_LOG", "warn"),
 )
 COOL_FOX_RECIPES = {
     host: replace(
@@ -348,11 +350,66 @@ COOL_FOX_RECIPES = {
         launch_paths=VICTORY_LAUNCH_PATHS,
         **FORK_WARMUP,
         launch_env=COOL_FOX_LAUNCH_ENV,
-        console_modes=("series-s", "series-x"),
+        # Upstream starts Series X: on an 8 GB card Series S leaves out faces and skin.
+        console_modes=VICTORY_CONSOLES,
         options_hint="Put -- before arguments for the game",
         launch_note=(
             "Uses the upstream pareto-residency settings. Proton launch is experimental."
             if host == "linux" else "Uses the upstream pareto-residency settings."
+        ),
+    )
+    for host, recipe in VICTORY_RECIPES.items()
+}
+
+
+SCARLETT_REPOSITORY = "https://github.com/Yaekai/victory-scarlett-3070"
+# Settings from the fork's scripts/play-3070.ps1 with its defaults: Series S, mip drop 1, 1024 MB card buffers,
+# 512 MB card windows and no ray tracing. The script also sets VICTORY_GAME_DIR, which `run` does not need.
+SCARLETT_LAUNCH_ENV = (
+    ("VICTORY_PIPELINE_BOOK", "1"), ("VICTORY_LOG", "info"), ("VICTORY_FRAME_INTERVAL_MS", "16.667"),
+    # 8 GB VRAM budget and page pool
+    ("VICTORY_DYNAMIC_SLOTS", "524288"), ("VICTORY_MAX_PRELUDES", "32"), ("VICTORY_CARD_BUFFERS_MB", "1024"),
+    ("VICTORY_CARD_WINDOWS_MB", "512"), ("VICTORY_TEXTURE_MIP_DROP", "1"), ("VICTORY_TEXTURE_ROOM_PERCENT", "94"),
+    ("VICTORY_PAGE_POOL", "1"), ("VICTORY_STAGING_PACK", "1"), ("VICTORY_LEVELS_ON_DEMAND", "0"),
+    # Submission and upload
+    ("VICTORY_WAIT_RESIDENT", "0"), ("VICTORY_JOIN_COPIES", "0"), ("VICTORY_REFRESH_ONCE", "0"),
+    ("VICTORY_CARD_REHASH_RUNS", "1"), ("VICTORY_BACK_OWN_VIEW", "1"), ("VICTORY_WIDE_MERGE", "1"),
+    ("VICTORY_MIRROR_FAST", "1"), ("VICTORY_PIPELINE_WAIT_MS", "20"), ("VICTORY_NO_WATCHDOG", "1"),
+    ("VICTORY_ASYNC_SUBMIT", "1"), ("VICTORY_QUEUE2", "1"), ("VICTORY_INDIRECT_WINDOW", "1"),
+    ("VICTORY_TEXTURE_NO_WAIT", "1"), ("VICTORY_COPY_PLAIN", "1"), ("VICTORY_WIDE_TEXTURES", "1"),
+    ("VICTORY_INDIRECT_GATHER", "1"), ("VICTORY_LATE_WAIT_LISTS", "1024"), ("VICTORY_CARD_FILLS_BATCH", "0"),
+    ("VICTORY_GATHER_DISPATCH", "0"), ("VICTORY_RELAY", "2"), ("VICTORY_WIDE_BACK", "1"),
+    ("VICTORY_RELAY_COPY", "1"), ("VICTORY_CARD_STEPS", "2"), ("VICTORY_INDIRECT_BATCH", "2"),
+    ("VICTORY_MAP_THREADS", "1"), ("VICTORY_CARD_AWAKE", "0"), ("VICTORY_SHOW_AFTER", "1"),
+    ("VICTORY_JOIN_PARTS", "8"), ("VICTORY_UPLOAD_AHEAD", "1"), ("VICTORY_CARD_BUFFERS_MIN_KB", "64"),
+    ("VICTORY_POOL_DISCARD", "1"), ("VICTORY_FILL_TITLE", "1"), ("VICTORY_PARTIAL_DELTA", "1"),
+    ("VICTORY_BAKE_DELTA", "1"), ("VICTORY_MAP_LOCK_FINE", "1"), ("VICTORY_POOL_CAP", "1"),
+    ("VICTORY_TABLE_MEMO", "1"), ("VICTORY_LIST_ALIAS_EXACT", "1"), ("VICTORY_LIST_HOLD", "1"),
+    ("VICTORY_EARLY_TEXTURES_MS", "40"), ("VICTORY_BAKE_TEXTURES_MS", "10000"), ("VICTORY_HEAP_PASS_MAX", "0"),
+    ("VICTORY_HEAP_CHANGED_MAX", "0"),
+    # A decal-heap defrag pass and the water's two tiled light programs, which leave dark tiles on NVIDIA
+    ("VICTORY_LEAVE_OUT", "02384a60fda6f2d0,5dc3b25986622949,6f225b641c5b0708"),
+    ("VICTORY_WC_NO_BACK", "1"), ("VICTORY_WC_NO_BACK_MIN_KB", "1024"), ("VICTORY_SYNC_IN_PLACE", "1"),
+    ("VICTORY_SPANS_QUICK", "1"), ("VICTORY_SYNC_FINE", "1"), ("VICTORY_HEAP_SYNC_FIRST", "1"),
+    ("VICTORY_HEAP_SYNC_AT_SUBMIT", "1"), ("VICTORY_SOFT_VIEWS", "copies"), ("VICTORY_SAMPLERS_MADE", "1"),
+    ("VICTORY_TABLE_NAMED_ONLY", "1"), ("VICTORY_QUEUE_MARKS", "1"), ("VICTORY_PORT_CONSTANTS", "1"),
+    ("VICTORY_EARLY_DEPTH", "1"), ("VICTORY_COPY_BESIDE", "1"), ("VICTORY_STORE_BESIDE", "1"),
+    ("VICTORY_GPU_BACK_MAX_KB", "1024"),
+    # Lighting and reflection stand-ins while ray tracing is off
+    ("VICTORY_AMBIENT", "0.8"), ("VICTORY_AMBIENT_AIR", "1.5"), ("VICTORY_AMBIENT_SPECULAR", "1"),
+)
+SCARLETT_RECIPES = {
+    host: replace(
+        recipe,
+        steps=(replace(recipe.steps[0], label="Build Scarlett 3070"),),
+        launch_paths=VICTORY_LAUNCH_PATHS,
+        **FORK_WARMUP,
+        launch_env=SCARLETT_LAUNCH_ENV,
+        console_modes=("series-s", "series-x"),
+        options_hint="e.g. VICTORY_TEXTURE_MIP_DROP=0 · put -- before arguments for the game",
+        launch_note=(
+            "Tuned for 8 GB NVIDIA cards. On 12 GB or more, add VICTORY_TEXTURE_MIP_DROP=0 for full-resolution "
+            "textures, and choose Series X on a faster GPU." + (" Proton launch is experimental." if host == "linux" else "")
         ),
     )
     for host, recipe in VICTORY_RECIPES.items()
@@ -430,5 +487,15 @@ PROJECTS = (
         previous_repositories=COOL_FOX_PREVIOUS,
         game_input="file",
         accent="#fbc590",
+    ),
+    Project(
+        key="scarlett_3070",
+        name="Scarlett 3070",
+        description="Victory fork tuned for 8 GB NVIDIA cards such as the RTX 3070.",
+        repository=SCARLETT_REPOSITORY,
+        setup_url=f"{SCARLETT_REPOSITORY}#build-and-run-quick-start",
+        recipes=SCARLETT_RECIPES,
+        game_input="file",
+        accent="#9fe0a8",
     ),
 )

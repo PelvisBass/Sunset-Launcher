@@ -62,12 +62,40 @@ class DesktopTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertNotIn("tuxbox", window.rows)
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["xcl", "victory", "hyphennn", "dexnom", "avatarmanz", "cool_fox"])
+                                 ["xcl", "victory", "hyphennn", "dexnom", "avatarmanz", "cool_fox", "scarlett_3070"])
                 for key, row in window.rows.items():
                     row.click()
                     self.assertTrue(window.runtime_box.isHidden(), key)
                     self.assertEqual(row.runtime.text(), "Native")
                     self.assertNotIn("DXVK", window.launch_options.placeholderText())
+            finally:
+                window.close()
+
+    @patch.object(Library, "revision", lambda self, project: "a" * 40)  # Every layer installed
+    def test_preset_lists_built_in_settings_and_marks_overrides(self):
+        from PySide6.QtWidgets import QDialog, QPlainTextEdit
+
+        shown = []
+
+        def capture(dialog):
+            shown.append((dialog.windowTitle(), dialog.findChild(QPlainTextEdit).toPlainText()))
+            return 0
+
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+            window = MainWindow(Path(directory), scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.show()
+                window.rows["victory"].click()
+                self.assertTrue(window.preset.isHidden())  # Victory has no built-in settings
+                window.rows["scarlett_3070"].click()
+                self.assertFalse(window.preset.isHidden())
+                window.launch_options.setText("VICTORY_TEXTURE_MIP_DROP=0 -- --windowed")
+                with patch.object(QDialog, "exec", capture):
+                    window.preset.click()
+                title, text = shown[0]
+                self.assertEqual(title, "Scarlett 3070 preset")
+                self.assertIn("VICTORY_TEXTURE_MIP_DROP=0    (yours, preset 1)", text)
+                self.assertIn("VICTORY_CARD_BUFFERS_MB=1024", text)
             finally:
                 window.close()
 
@@ -142,25 +170,27 @@ class DesktopTests(unittest.TestCase):
     def test_cool_fox_console_mode_is_saved_and_passed_to_the_launch_job(self):
         with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
             data = Path(directory)
-            for saved_mode in ("series-s", "series-x"):
+            for saved_mode in ("series-x", "series-s"):
                 window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
                 try:
-                    # Victory has a console choice too, defaulting to Series X. Cool Fox defaults to Series S.
+                    # Victory and Cool Fox default to Series X. Scarlett 3070 defaults to Series S.
+                    window.rows["scarlett_3070"].click()
+                    self.assertEqual(window.console_mode.currentData(), "series-s")
                     window.rows["victory"].click()
                     self.assertFalse(window.console_mode_box.isHidden())
                     self.assertEqual(window.console_mode.currentData(), "series-x")
                     window.rows["cool_fox"].click()
                     self.assertFalse(window.console_mode_box.isHidden())
                     self.assertEqual(window.console_mode.currentData(), saved_mode)
-                    series_x = window.console_mode.findData("series-x")
-                    window.console_mode.setCurrentIndex(series_x)
-                    window.console_mode.activated.emit(series_x)
+                    series_s = window.console_mode.findData("series-s")
+                    window.console_mode.setCurrentIndex(series_s)
+                    window.console_mode.activated.emit(series_s)
                     game = data / "game.exe"
                     game.touch()
                     window.game.setText(str(game))
                     with patch.object(window, "_begin_job") as begin:
                         window._start((window.selected,), "launch")
-                    self.assertEqual(begin.call_args.args[0].console_mode, "series-x")
+                    self.assertEqual(begin.call_args.args[0].console_mode, "series-s")
                 finally:
                     window.close()
 
@@ -241,7 +271,7 @@ class DesktopTests(unittest.TestCase):
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["victory", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "cool_fox"])
+                                 ["victory", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "cool_fox", "scarlett_3070"])
                 window.project_list.move_row(window.rows["cool_fox"], 0)
                 window.project_list.move_row(window.rows["victory"], len(window.rows))
                 self.assertEqual(window.selected.key, "xcl")
@@ -251,7 +281,7 @@ class DesktopTests(unittest.TestCase):
             try:
                 projects = window.project_list.projects()
                 self.assertEqual([project.key for project in projects],
-                                 ["cool_fox", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "victory"])
+                                 ["cool_fox", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "scarlett_3070", "victory"])
                 with patch.object(window, "_start") as start:
                     window.update_all.click()
                     start.assert_called_once_with(projects, "update")
