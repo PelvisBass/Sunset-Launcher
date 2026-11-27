@@ -268,6 +268,7 @@ class Runner:
             {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
             if os.name == "nt" else {"start_new_session": True}
         )
+        name = Path(command[0]).name if command else ""
         environment = host_environment(env)
         if os.name == "nt" and command and not os.path.dirname(command[0]):
             # Windows looks up a bare program name on the launcher's own PATH, not the one passed here.
@@ -320,9 +321,9 @@ class Runner:
                     self._kill_timer = None
         self.check_cancelled()
         if timed_out:
-            raise OperationError(f"{Path(command[0]).name} timed out after {timeout:g} seconds.")
+            raise OperationError(f"{name} timed out after {timeout:g} seconds.")
         if code:
-            raise OperationError(f"{Path(command[0]).name} exited with code {code}. See the activity log for details.")
+            raise OperationError(f"{name} exited with code {code}. See the activity log for details.")
         return "".join(captured).strip()
 
 
