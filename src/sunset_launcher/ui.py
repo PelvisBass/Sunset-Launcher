@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from . import RELEASES_URL, __version__
+from . import RELEASES_URL, __version__, winsetup
 from .backend import (
     Cancelled, Library, OperationError, Runner, SetupRequired, WarmupProgress, host_environment,
     parse_launch_options, parse_warmup_progress, recipe_for,
@@ -320,6 +320,64 @@ class InstallCard(QFrame):
         layout.addLayout(text, 1)
 
 
+class BuildToolsCard(QFrame):
+    """Windows only: the tools every layer build needs, and one button that installs the missing ones."""
+
+    TOOLS = (("git", "Git"), ("msvc", "Visual Studio C++ Build Tools"), ("rust", "Rust"))
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("installCard")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 13, 14, 13)
+        layout.setSpacing(6)
+        heading = QHBoxLayout()
+        heading.addWidget(label("Build tools", "rowTitle"))
+        heading.addStretch()
+        self.status = label("", "status")
+        heading.addWidget(self.status)
+        layout.addLayout(heading)
+        layout.addWidget(label(
+            "Layers are built from source with Git, Rust and the Visual Studio C++ Build Tools. "
+            "Sunset Launcher can install whichever are missing.",
+            "muted", wrap=True,
+        ))
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(3)
+        self.marks: dict[str, QLabel] = {}
+        for row, (key, name) in enumerate(self.TOOLS):
+            grid.addWidget(label(name, "rowDetail"), row, 0)
+            self.marks[key] = label("", "rowDetail")
+            grid.addWidget(self.marks[key], row, 1)
+        grid.setColumnStretch(2, 1)
+        layout.addSpacing(2)
+        layout.addLayout(grid)
+        actions = QHBoxLayout()
+        actions.setSpacing(4)
+        self.install = button("Install missing tools", primary=True)
+        self.recheck = button("Check again", quiet=True)
+        actions.addWidget(self.install)
+        actions.addWidget(self.recheck)
+        actions.addStretch()
+        layout.addSpacing(6)
+        layout.addLayout(actions)
+
+    def update_tools(self, tools: tuple[winsetup.BuildTool, ...], winget_available: bool):
+        found = {tool.key: tool for tool in tools}
+        for key, mark in self.marks.items():
+            tool = found.get(key)
+            mark.setText("✓ Installed" if tool is not None and tool.found else tool.detail if tool else "")
+        needed = winsetup.missing(tools)
+        self.status.setText("Ready" if not needed else f"{len(needed)} missing")
+        self.install.setVisible(bool(needed))
+        self.install.setText("Install missing tools" if winget_available else "Open download pages")
+        self.install.setToolTip(
+            "Install them with winget. Windows asks for administrator permission." if winget_available
+            else "winget is not available, so open each tool's download page instead."
+        )
+
+
 class ProjectRow(QPushButton):
     def __init__(self, project: Project):
         super().__init__()
@@ -476,6 +534,7 @@ class Job(QObject):
         self, library: Library, projects: tuple[Project, ...], action: str,
         game: str, proton: ProtonInstall | None, prepared_prefix: Path | None, launch_options: str = "",
         *, console_mode: str | None = None, warm_jobs: int | None = None, warm_first: bool = False,
+        install_tools: bool = False,
     ):
         super().__init__()
         self.library = library
@@ -488,6 +547,7 @@ class Job(QObject):
         self.console_mode = console_mode
         self.warm_jobs = warm_jobs
         self.warm_first = warm_first
+        self.install_tools = install_tools
         self.runner = Runner(self.line.emit)
 
     def _warm(self, project: Project, output) -> None:
@@ -532,7 +592,17 @@ class Job(QObject):
                         output(f"Could not remove older launcher logs: {error}\n")
 
                 self.runner.output = output
-                for project in self.projects:
+                tools_error = ""
+                if self.install_tools:
+                    output("\n[Build tools] Installing\n")
+                    try:
+                        winsetup.install(self.runner)
+                    except (OSError, OperationError) as error:
+                        tools_error = str(error)
+                        output(f"Error: {error}\n")
+                        for project in self.projects:
+                            self.state.emit(project.key, "Needs setup")
+                for project in () if tools_error else self.projects:
                     self.runner.check_cancelled()
                     verb = {
                         "build": "Building", "update": "Updating", "launch": "Running", "warm": "Warming up",
@@ -607,7 +677,11 @@ class Job(QObject):
                                 self.shader_usage.emit(project.key, size)
                             except OSError as error:
                                 output(f"Could not measure the shader cache: {error}\n")
-                if self.action == "check" and (setup_needed or failures):
+                if tools_error:
+                    result = "Build tools setup did not finish"
+                elif self.action == "tools":
+                    result = "Build tools installed"
+                elif self.action == "check" and (setup_needed or failures):
                     result = f"Update check complete · {setup_needed + failures} unavailable"
                 elif setup_needed or failures:
                     result = " · ".join(
@@ -661,6 +735,9 @@ class MainWindow(QMainWindow):
         self.warm_outcome = ""
         self._last_result = ""
         self._installing: set[str] = set()
+        self.build_tools: tuple[winsetup.BuildTool, ...] = ()
+        self.build_tools_card: BuildToolsCard | None = None
+        self._winget: str | None = None
         self.setWindowTitle("Sunset Launcher")
         self.setWindowIcon(QIcon(sun_logo()))
         self.setMinimumSize(870, 620)
@@ -994,6 +1071,12 @@ class MainWindow(QMainWindow):
             "muted", wrap=True,
         ))
         layout.addSpacing(4)
+        if sys.platform == "win32":
+            self.build_tools_card = BuildToolsCard()
+            self.build_tools_card.install.clicked.connect(self._install_build_tools)
+            self.build_tools_card.recheck.clicked.connect(self._refresh_build_tools)
+            layout.addWidget(self.build_tools_card)
+            self._refresh_build_tools()
         for project in available_projects():
             card = InstallCard(project, self._runtime_name(project))
             card.install.clicked.connect(lambda checked=False, item=project: self._install(item))
@@ -1290,8 +1373,58 @@ class MainWindow(QMainWindow):
         self._update_warm_card()
 
     def _install(self, project: Project):
+        install_tools = False
+        if self.build_tools_card is not None:
+            self._refresh_build_tools()
+            if winsetup.missing(self.build_tools):
+                if not self._confirm_build_tools(f"{project.name} needs build tools that are not installed yet."):
+                    return
+                install_tools = True
         self._installing.add(project.key)
-        self._start((project,), "build")
+        self._start((project,), "build", install_tools=install_tools)
+
+    def _refresh_build_tools(self):
+        if self.build_tools_card is None:
+            return
+        self.build_tools = winsetup.detect()
+        self._winget = winsetup.winget()
+        self.build_tools_card.update_tools(self.build_tools, self._winget is not None)
+
+    def _install_build_tools(self):
+        self._refresh_build_tools()
+        if winsetup.missing(self.build_tools) and self._confirm_build_tools("Install the missing build tools?"):
+            self._start((), "tools", install_tools=True)
+
+    def _confirm_build_tools(self, lead: str) -> bool:
+        """Ask before installing anything. Returns whether to go ahead with winget."""
+        needed = winsetup.missing(self.build_tools)
+        names = "\n".join(f"• {tool.name}, {tool.size}" for tool in needed)
+        box = QMessageBox(self)
+        box.setWindowTitle("Build tools")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(lead)
+        if self._winget is None:
+            box.setInformativeText(
+                f"{names}\n\nwinget (App Installer) is not available on this PC, so the launcher cannot install "
+                "them for you. Open their download pages, install them, then choose Check again."
+            )
+            pages = box.addButton("Open download pages", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is pages:
+                for tool in needed:
+                    open_url(QUrl(winsetup.MANUAL_URLS[tool.key]))
+            return False
+        box.setInformativeText(
+            f"Sunset Launcher will install these with winget:\n{names}\n\n"
+            "Installing accepts each package's license terms. Windows asks for administrator permission, and the "
+            "C++ Build Tools can take 10 to 30 minutes. Progress shows in Activity."
+        )
+        install = box.addButton("Install", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(install)
+        box.exec()
+        return box.clickedButton() is install
 
     def _warm_key(self, project: Project) -> str:
         return f"warmup/{project.key}"
@@ -1424,6 +1557,8 @@ class MainWindow(QMainWindow):
         )
         self.measure_shaders.setEnabled(can_start_job and cache_supported)
         self.open_warmup.setVisible(recipe is not None and bool(recipe.warmup))
+        if self.build_tools_card is not None:
+            self.build_tools_card.install.setEnabled(can_start_job)
         for card in self.install_cards.values():
             unavailable = card.project.upstream_unavailable and not (self.library.source(card.project) / ".git").exists()
             card.install.setEnabled(can_start_job and recipe_for(card.project) is not None and not unavailable)
@@ -1665,6 +1800,9 @@ class MainWindow(QMainWindow):
         box.setText(f"{project.name} build setup")
         box.setTextFormat(Qt.TextFormat.PlainText)
         instructions = ["Install Git and add the build tools to PATH."]
+        if sys.platform == "win32":
+            instructions = ["Install missing tools, under Build tools on the Install page, sets up Git, Rust and the "
+                            "Visual Studio C++ Build Tools for you."]
         if recipe is None:
             instructions = ["This operating system has no build recipe for this project."]
         else:
@@ -1692,8 +1830,10 @@ class MainWindow(QMainWindow):
         except OSError as error:
             QMessageBox.warning(self, "Folder unavailable", str(error))
 
-    def _start(self, projects: tuple[Project, ...], action: str, *, startup: bool = False):
-        if not projects:
+    def _start(
+        self, projects: tuple[Project, ...], action: str, *, startup: bool = False, install_tools: bool = False,
+    ):
+        if not projects and action != "tools":
             return
         if self.thread is not None and (
             not self._startup_check_running or action == "check" or self._job_after_startup_check is not None
@@ -1722,6 +1862,7 @@ class MainWindow(QMainWindow):
             console_mode=self.console_mode.currentData() if uses_layer else None,
             warm_jobs=jobs if uses_layer else None,
             warm_first=action == "launch" and self.warm_before_launch.isChecked() and self._needs_warmup(projects[0], game),
+            install_tools=install_tools,
         )
         if self.thread is not None:
             self._job_after_startup_check = job
@@ -1740,8 +1881,10 @@ class MainWindow(QMainWindow):
                 self.shader_sizes.pop(project.key, None)
             if not shader_job and not startup:
                 self.states[project.key] = "Queued"
+        if job.install_tools:
+            self._show_page(ACTIVITY_PAGE)
         self._set_summary(
-            "Job queued" if not startup else "Measuring shader caches…" if shader_job else "Checking for updates…"
+            "Installing build tools…" if job.install_tools else "Job queued" if not startup else "Measuring shader caches…" if shader_job else "Checking for updates…"
         )
         self.stop.setEnabled(True)
 
@@ -1824,8 +1967,11 @@ class MainWindow(QMainWindow):
         # finished is emitted just before the thread exits. Let it exit before a deferred close quits the app.
         if self.thread is not None:
             self.thread.wait()
+        installed_tools = self.worker is not None and self.worker.install_tools
         self.thread = None
         self.worker = None
+        if installed_tools:
+            self._refresh_build_tools()
         self._startup_check_running = False
         self.states = {key: state for key, state in self.states.items() if state in {"Failed", "Needs setup", "Stopped"}}
         self.stop.setEnabled(False)

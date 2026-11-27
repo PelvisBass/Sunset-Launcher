@@ -22,6 +22,9 @@ from threading import Event, Lock, Timer
 from .catalog import Project, Recipe
 from .proton import ProtonInstall, prepared_wine_launch, proton_game_path, proton_launch
 from .shader_cache import cache_files, configure_shader_cache, remove_cache_file
+from .winsetup import detect as detect_build_tools
+from .winsetup import missing as missing_build_tools
+from .winsetup import with_tool_folders
 
 
 class OperationError(RuntimeError):
@@ -87,7 +90,7 @@ def host_environment(env: dict[str, str] | None = None) -> dict[str, str]:
     """Keep the frozen Qt and Python libraries out of external tools' environment."""
     result = dict(os.environ if env is None else env)
     if not getattr(sys, "frozen", False):
-        return result
+        return with_tool_folders(result) if sys.platform == "win32" else result
     if sys.platform == "win32":
         bundle = getattr(sys, "_MEIPASS", None)
         if bundle:
@@ -98,7 +101,7 @@ def host_environment(env: dict[str, str] | None = None) -> dict[str, str]:
                     result[name] = os.pathsep.join(external)
                 else:
                     result.pop(name, None)
-        return result
+        return with_tool_folders(result)
     if sys.platform != "linux":
         return result
     original = result.pop("LD_LIBRARY_PATH_ORIG", None)
@@ -265,9 +268,15 @@ class Runner:
             {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
             if os.name == "nt" else {"start_new_session": True}
         )
+        environment = host_environment(env)
+        if os.name == "nt" and command and not os.path.dirname(command[0]):
+            # Windows looks up a bare program name on the launcher's own PATH, not the one passed here.
+            found = shutil.which(command[0], path=environment.get("PATH"))
+            if found:
+                command = (found, *command[1:])
         try:
             process = subprocess.Popen(
-                command, cwd=cwd, env=host_environment(env), stdin=subprocess.DEVNULL,
+                command, cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, encoding="utf-8", errors="replace", **options,
             )
@@ -545,6 +554,21 @@ class Library:
             sdk = Path(env.get("XWIN_SDK_ROOT", str(cache / "cargo-xwin/xwin"))).expanduser()
             if not (sdk / "sdk/include/um/windows.h").is_file():
                 missing.append("Windows SDK/CRT cache (cargo xwin cache xwin --xwin-arch x86_64)")
+        if sys.platform == "win32":
+            # Cargo's MSVC targets link with Visual Studio's tools. Without them a build fails deep in a crate.
+            tools = {tool.key: tool for tool in missing_build_tools(detect_build_tools(env))}
+            missing = [
+                tools["git"].name if tool == "git" and "git" in tools else
+                tools["rust"].name if tool == "cargo" and "rust" in tools else tool
+                for tool in missing
+            ]
+            if "cargo" in recipe.dependencies and "msvc" in tools:
+                missing.append(tools["msvc"].name)
+            if missing:
+                raise SetupRequired(
+                    f"Missing build tools: {', '.join(dict.fromkeys(missing))}. "
+                    "Choose Install missing tools under Build tools on the Install page."
+                )
         if missing:
             raise SetupRequired(f"Missing build prerequisites: {', '.join(missing)}. Open Build setup for instructions.")
 

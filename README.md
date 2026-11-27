@@ -41,6 +41,7 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
 ## ✨ Features
 
 - **Install tab:** pick a layer and select **Install** to clone and build it. Your library lists only the layers you've installed.
+- **Build tools on Windows:** the launcher checks for Git, Rust and the Visual Studio C++ Build Tools, and installs whichever are missing with winget when you install a layer.
 - **Shader warm-up:** compile a game's shaders before you play, with live progress, speed, time left, free RAM and the warm-up's own RAM. It can run automatically before a launch after a layer update. Uses each layer's own warm-up tool (XCL, Victory, AvatarManz, Cool Fox and TuxBox).
 - **One-click updates:** track each layer's upstream commit. **Update & build all** follows the library order, which you can change by dragging.
 - **Update checks:** at startup the launcher shows **Up to date** or **Update available** for each build.
@@ -55,8 +56,10 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
 
 ## 🚀 Quick start
 
-1. Install **Git**. Open **Install**, check a layer's **Requirements** (usually Rust plus a few extras), then select **Install**.
-2. If something is missing, the layer shows **Needs setup** and **Activity** lists what to install. Once it builds, it moves to **Library**.
+1. Open **Install** and select **Install** on a layer.
+   - **Windows:** the **Build tools** card shows what's missing. The launcher offers to install it with winget and asks before it starts. Windows then asks for administrator permission, and the C++ Build Tools (about 7 GB) take 10 to 30 minutes.
+   - **Linux:** install Git and the tools in the layer's **Requirements** (usually Rust plus a few extras) first.
+2. If something is still missing, the layer shows **Needs setup** and **Activity** lists what to install. Once it builds, it moves to **Library**.
 3. Set **Shared game path**, pick a **Proton version** on Linux, and select **Launch**. Use **Warm-up** first to compile the game's shaders ahead of time.
 
 <details>
@@ -76,6 +79,7 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
   | Victory and its forks | To the layer. Arguments after `--` go to the game |
   | TuxBox | To the layer |
 
+- **Windows without winget:** on older Windows 10 builds without App Installer, the **Build tools** card opens each tool's download page instead. Install them, then select **Check again**.
 - **Build tools in the data folder:** on Linux, tools placed under `build-tools/` in the data folder are picked up. These include Cargo and Rustup, MinGW-w64, DXC and the cargo-xwin SDK cache.
 - **Warm-up progress:** XCL reports overall progress and time left. Victory works through the game's files one at a time, so its percentage and time left are for the current file. AvatarManz and Cool Fox report a running count without a total. TuxBox prepares shaders with its own per-title profiles and reports no counts. hyphennn and DexNom Runtime have no warm-up the launcher can run. On Linux, the warm-up runs through Proton's `runinprefix` so its progress reaches the launcher. Victory's warm-up translates shaders only: its pipeline pre-build has nowhere to keep pipelines under Proton and stops the run.
 - **Parallel compiles:** each compile can hold over a gigabyte of RAM in the driver. Lower **Parallel compiles** on the Warm-up page if free RAM runs low.
