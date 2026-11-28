@@ -222,6 +222,7 @@ class Runner:
         self._process: subprocess.Popen | None = None
         self._kill_timer: Timer | None = None
         self.paused = False
+        self._suspended: list[int] = []
 
     @property
     def pid(self) -> int | None:
@@ -259,12 +260,15 @@ class Runner:
 
     def _suspend(self, process: subprocess.Popen, suspend: bool) -> None:
         if suspend:
-            # Twice: a process started while the first pass ran is caught by the second.
+            # Twice: a process started while the first pass ran is caught by the second. Each process is
+            # suspended once, since Windows would need a resume for every suspend.
             for _ in range(2):
-                suspend_processes(process_tree(process.pid), True)
+                fresh = [pid for pid in process_tree(process.pid) if pid not in self._suspended]
+                self._suspended.extend(suspend_processes(fresh, True))
         else:
             # Children first, so a parent that wakes finds its children running.
-            suspend_processes(list(reversed(process_tree(process.pid))), False)
+            suspend_processes(list(reversed(self._suspended)), False)
+            self._suspended = []
         self.paused = suspend
 
     def _stop(self, process: subprocess.Popen) -> None:
@@ -355,6 +359,7 @@ class Runner:
             with self._lock:
                 self._process = None
                 self.paused = False
+                self._suspended = []
                 if timeout_timer is not None:
                     timeout_timer.cancel()
                 if self._kill_timer is not None:

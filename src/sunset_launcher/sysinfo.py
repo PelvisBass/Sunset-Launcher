@@ -115,22 +115,26 @@ def process_tree(root: int, proc: Path = Path("/proc")) -> list[int]:
     return tree
 
 
-def suspend_processes(pids: list[int], suspend: bool) -> int:
-    """Pause or continue processes. Returns how many it reached."""
-    reached = 0
+def suspend_processes(pids: list[int], suspend: bool) -> list[int]:
+    """Pause or continue processes. Returns the ones it reached.
+
+    Windows counts suspends, so a process suspended twice needs two resumes: callers suspend each
+    process once and continue exactly the ones that were suspended."""
+    reached: list[int] = []
     if sys.platform == "win32":
         import ctypes
 
         windll = getattr(ctypes, "windll", None)
         if windll is None:
-            return 0
+            return reached
         call = windll.ntdll.NtSuspendProcess if suspend else windll.ntdll.NtResumeProcess
         windll.kernel32.OpenProcess.restype = ctypes.c_void_p
         for pid in pids:
             handle = windll.kernel32.OpenProcess(0x0800, False, pid)  # PROCESS_SUSPEND_RESUME
             if handle:
                 try:
-                    reached += call(ctypes.c_void_p(handle)) == 0
+                    if call(ctypes.c_void_p(handle)) == 0:
+                        reached.append(pid)
                 finally:
                     windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
         return reached
@@ -139,7 +143,7 @@ def suspend_processes(pids: list[int], suspend: bool) -> int:
     for pid in pids:
         try:
             os.kill(pid, signal.SIGSTOP if suspend else signal.SIGCONT)
-            reached += 1
+            reached.append(pid)
         except (ProcessLookupError, PermissionError):
             pass
     return reached

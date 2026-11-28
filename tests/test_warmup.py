@@ -139,37 +139,66 @@ class PauseTests(unittest.TestCase):
 
             thread = threading.Thread(target=work)
             thread.start()
+            try:
+                def size():
+                    return ticks.stat().st_size if ticks.exists() else 0
 
-            def size():
-                return ticks.stat().st_size if ticks.exists() else 0
+                deadline = time.monotonic() + 15
+                while size() < 5 and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertGreaterEqual(size(), 5, "the child never started")
+                self.assertGreaterEqual(len(process_tree(runner.pid)), 2)
 
-            deadline = time.monotonic() + 15
-            while size() < 5 and time.monotonic() < deadline:
-                time.sleep(0.05)
-            self.assertGreaterEqual(size(), 5, "the child never started")
-            self.assertGreaterEqual(len(process_tree(runner.pid)), 2)
+                self.assertTrue(runner.pause())
+                time.sleep(0.3)
+                frozen = size()
+                time.sleep(0.5)
+                self.assertEqual(size(), frozen, "the child kept running while paused")
+                self.assertFalse(runner.pause())  # Already paused
 
+                self.assertTrue(runner.resume())
+                time.sleep(0.5)
+                self.assertGreater(size(), frozen)
+
+                # A stop while paused wakes the tree first, so it ends.
+                self.assertTrue(runner.pause())
+                runner.cancel()
+                thread.join(timeout=15)
+                self.assertFalse(thread.is_alive())
+                self.assertIsInstance(ended[0], Cancelled)
+                time.sleep(0.5)
+                stopped = size()
+                time.sleep(0.5)
+                self.assertEqual(size(), stopped, "the child outlived the stop")
+            finally:
+                # A failed check must not leave a frozen tree holding the test run open.
+                runner.cancel()
+                thread.join(timeout=15)
+
+
+class SuspendCountTests(unittest.TestCase):
+    """Windows counts suspends, so every process is suspended once and resumed once."""
+
+    def test_each_process_is_suspended_once_and_resumed_once(self):
+        from unittest import mock
+
+        from sunset_launcher import backend
+
+        calls: list[tuple[tuple[int, ...], bool]] = []
+
+        def record(pids, suspend):
+            calls.append((tuple(pids), suspend))
+            return list(pids)
+
+        trees = iter([[10, 11], [10, 11, 12]])  # 12 started between the two passes
+        runner = backend.Runner(lambda text: None)
+        runner._process = mock.Mock(pid=10)
+        with mock.patch.object(backend, "suspend_processes", side_effect=record), \
+                mock.patch.object(backend, "process_tree", side_effect=lambda pid: next(trees)):
             self.assertTrue(runner.pause())
-            time.sleep(0.3)
-            frozen = size()
-            time.sleep(0.5)
-            self.assertEqual(size(), frozen, "the child kept running while paused")
-            self.assertFalse(runner.pause())  # Already paused
-
             self.assertTrue(runner.resume())
-            time.sleep(0.5)
-            self.assertGreater(size(), frozen)
-
-            # A stop while paused wakes the tree first, so it ends.
-            self.assertTrue(runner.pause())
-            runner.cancel()
-            thread.join(timeout=15)
-            self.assertFalse(thread.is_alive())
-            self.assertIsInstance(ended[0], Cancelled)
-            time.sleep(0.5)
-            stopped = size()
-            time.sleep(0.5)
-            self.assertEqual(size(), stopped, "the child outlived the stop")
+        self.assertEqual(calls, [((10, 11), True), ((12,), True), ((12, 11, 10), False)])
+        self.assertFalse(runner.paused)
 
 
 class PageTests(unittest.TestCase):
