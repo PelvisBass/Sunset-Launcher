@@ -33,9 +33,9 @@ Keep the extracted folder together, including `_internal`. The Windows build is 
 | [TuxBox](https://github.com/brcly/TuxBox) | ✅ Managed by TuxBox | — Linux only |
 | [hyphennn](https://github.com/fxceless/victory-fork) | ✅ Proton (experimental) | ✅ Native |
 | [DexNom Runtime](https://github.com/DexNom/VIctory) | ✅ Proton (experimental) | ✅ Native |
-| [AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX) | ✅ Proton (experimental) | ✅ Native, tested on RX 7900 XTX |
 | [Cool Fox](https://github.com/DoubleGhosty/cool_fox) (mirror) | ✅ Proton (experimental) | ✅ Native |
 | [Scarlett 3070](https://github.com/Yaekai/victory-scarlett-3070) | ✅ Proton (experimental) | ✅ Native, tuned for 8 GB NVIDIA cards |
+| [VIctory-NVIDIA-RT](https://github.com/Kemerd/VIctory-NVIDIA-RT) | ✅ Proton (experimental) | ✅ Native, for NVIDIA RTX cards |
 
 Cool Fox's original repository is offline, so the launcher builds from a mirror with the same history, and existing checkouts switch to it on their next update. Whether a particular title runs depends on the upstream project, the build and your hardware.
 
@@ -43,14 +43,16 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
 
 - **Install tab:** pick a layer and select **Install** to clone and build it. Your library lists only the layers you've installed.
 - **Build tools on Windows:** the launcher checks for Git, Rust and the Visual Studio C++ Build Tools, and installs whichever are missing with winget when you install a layer.
-- **Shader warm-up:** compile a game's shaders before you play, with live progress, speed, time left, free RAM and the warm-up's own RAM. It can run automatically before a launch after a layer update. Uses each layer's own warm-up tool (XCL, Victory, AvatarManz, Cool Fox, Scarlett 3070 and TuxBox).
+- **Run-time files fetched for you:** Microsoft's D3DCompiler for Victory and its forks under Proton (so Series S draws), and NVIDIA's DLSS files for VIctory-NVIDIA-RT after you agree. Only the needed files are taken from each vendor's archive, and each is checked against a pinned SHA-256.
+- **Shader warm-up:** compile a game's shaders before you play, with live progress, speed, time left, free RAM and the warm-up's own RAM. It can run automatically before a launch after a layer update. Uses each layer's own warm-up tool (XCL, Victory, Cool Fox, Scarlett 3070, VIctory-NVIDIA-RT and TuxBox).
 - **One-click updates:** track each layer's upstream commit. **Update & build all** follows the library order, which you can change by dragging.
 - **Update checks:** at startup the launcher shows **Up to date** or **Update available** for each build.
 - **Proton on Linux:** finds Steam, Flatpak, umu, Lutris and Heroic Proton builds. It prefers `umu-run`, and each project gets its own prefix.
 - **Console choice:** run a game as a Series X or Series S with one click, for every layer that supports it.
 - **Launch options:** per-project settings in the style of Steam's launch options. `VAR=value` entries set environment variables, and the remaining arguments go where each layer expects them.
-- **Presets:** layers that ship tuned settings (AvatarManz, Cool Fox and Scarlett 3070) list them under **Preset**, marking any you've overridden in Launch options.
-- **Shader cache:** shows each project's cache size at startup and clears it on request.
+- **Presets:** layers that ship tuned settings (Cool Fox, Scarlett 3070 and VIctory-NVIDIA-RT) list them under **Preset**, marking any you've overridden in Launch options.
+- **Game settings:** VIctory-NVIDIA-RT's console, resolution, DLSS, frame generation, Reflex, HDR, frame cap, speed and ray tracing are picked in the launcher, as its `PLAY.cmd` does, and win over the same settings in its in-game F1 menu.
+- **Shader cache:** shows each project's cache size at startup and clears it on request. Under Proton each layer gets its own GPU driver pipeline cache with no size cap, as Steam gives each game, so pipelines aren't pushed out and made again in a later session.
 - **Shared game path:** pick a game once and launch it with any layer.
 - **Activity log:** live output from every job, with the last two job logs kept.
 
@@ -68,10 +70,11 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
 <summary><b>Layer notes and tips</b></summary>
 
 - **XCL on Linux:** stock Proton can fail before rendering. Under **Wine prefix**, select a prefix prepared with DXVK and an XCL-compatible vkd3d-proton build. Place the matching x64 `dxcompiler.dll` and `dxil.dll` from a [DXC release](https://github.com/microsoft/DirectXShaderCompiler/releases) beside `xcl.exe`.
-- **Victory and hyphennn:** some titles need a native Microsoft D3DCompiler DLL in the prefix.
+- **Microsoft's D3DCompiler on Linux:** Wine's own shader compiler can't build some of the title's shaders, which shows in Series S mode. For Victory and its forks, the launcher fetches Microsoft's redistributable `d3dcompiler_47.dll` (about 5 MB, from the Windows SDK package on NuGet) when it builds, puts it beside `victory.exe` and adds `d3dcompiler_47=n,b` to `WINEDLLOVERRIDES`. A copy you already put there is left alone. Your own `WINEDLLOVERRIDES` entries are added after the launcher's.
 - **DexNom Runtime on Linux:** the build needs PowerShell (`pwsh`) to download and verify its format tables.
-- **AvatarManz, Cool Fox and Scarlett 3070:** each comes preset with its upstream renderer settings ([AvatarManz](https://github.com/avatarmanz/VIctory-7900XTX#how-to-run-it), [Cool Fox](https://github.com/DoubleGhosty/cool_fox#run-the-codec_d-windows-build), [Scarlett 3070](https://github.com/Yaekai/victory-scarlett-3070#build-and-run-quick-start)). Add `VAR=value` in **Launch options** to override any of them.
+- **Cool Fox and Scarlett 3070:** each comes preset with its upstream renderer settings ([Cool Fox](https://github.com/DoubleGhosty/cool_fox#run-the-codec_d-windows-build), [Scarlett 3070](https://github.com/Yaekai/victory-scarlett-3070#build-and-run-quick-start)). Add `VAR=value` in **Launch options** to override any of them.
 - **Cool Fox on a 4 GB card:** add `VICTORY_CARD_BUFFERS_MB=256 VICTORY_CARD_BUFFERS_MIN_KB=4096 VICTORY_D3D12_BACKGROUND=0` to **Launch options** and choose **Series S**, as upstream's `Play-VIctory-4GB.cmd` does.
+- **VIctory-NVIDIA-RT:** the launcher runs its `victory.exe play` itself, so you don't need `PLAY.cmd`. Its questions are under **Game settings** in the details panel: console, resolution, window, DLSS, frame generation, Reflex, HDR10, frame cap, ultrawide interface, speed (fast is PLAY.cmd's recommended one) and ray tracing (this fork's native path, `VICTORY_RT_NATIVE`, which runs the title's own ray tracing on the RTX cores; experimental and slow. The F1 menu's older "RAY TRACING (SLOW, BROKEN)" is cleared too). Like PLAY.cmd, the launcher clears what the F1 menu saved for those before each start; F1 still sets the rest. Its `VICTORY_*` launch options are passed as `--set`, which `play` needs. For DLSS and frame generation, the launcher asks once whether to download NVIDIA's Streamline files (8 files, about 70 MB, from NVIDIA's GitHub release) when it builds. That works on Windows and under Proton, which provides NVIDIA's NVAPI and NGX on NVIDIA cards. Under Proton the first start after a build runs slowly, so start it again. Proton's NVAPI has no Reflex Sync, so Streamline would log an error every frame with frame generation on; the launcher leaves Streamline's own messages out of the game's log under Proton (`VICTORY_LOG=info` in Launch options brings them back). Game settings fold away to one line when you don't need them.
 - **Scarlett 3070 on 12 GB or more:** add `VICTORY_TEXTURE_MIP_DROP=0` to **Launch options** for full-resolution textures, and choose **Series X** on a faster GPU.
 - **Console:** pick **Series X** or **Series S** for Victory and its forks. Scarlett 3070 defaults to Series S, the others to Series X. XCL also offers **Automatic**, which uses the game's own setting, and passes your choice as `XCL_DEVICE_TYPE`.
 - **TuxBox:** selects its own Proton through umu. Some titles need its built providers staged first. See the [Lanes example](https://github.com/brcly/TuxBox/blob/main/examples/lanes/README.md#build-and-play).
@@ -85,7 +88,8 @@ Cool Fox's original repository is offline, so the launcher builds from a mirror 
 
 - **Windows without winget:** on older Windows 10 builds without App Installer, the **Build tools** card opens each tool's download page instead. Install them, then select **Check again**.
 - **Build tools in the data folder:** on Linux, tools placed under `build-tools/` in the data folder are picked up. These include Cargo and Rustup, MinGW-w64, DXC and the cargo-xwin SDK cache.
-- **Warm-up progress:** XCL reports overall progress and time left. Victory works through the game's files one at a time, so its percentage and time left are for the current file. AvatarManz, Cool Fox and Scarlett 3070 report a running count without a total. TuxBox prepares shaders with its own per-title profiles and reports no counts. hyphennn and DexNom Runtime have no warm-up the launcher can run. On Linux, the warm-up runs through Proton's `runinprefix` so its progress reaches the launcher. Victory's warm-up translates shaders only: its pipeline pre-build has nowhere to keep pipelines under Proton and stops the run.
+- **Warm-up progress:** XCL reports overall progress and time left. Victory works through the game's files one at a time, so its percentage and time left are for the current file. Cool Fox, Scarlett 3070 and VIctory-NVIDIA-RT report a running count without a total. TuxBox prepares shaders with its own per-title profiles and reports no counts. hyphennn and DexNom Runtime have no warm-up the launcher can run. On Linux, the warm-up runs through Proton's `runinprefix` so its progress reaches the launcher. Victory's warm-up translates shaders only: its pipeline pre-build has nowhere to keep pipelines under Proton and stops the run.
+- **GPU pipelines:** what you wait for in game is the GPU making pipelines, not the shader translation. For Cool Fox, Scarlett 3070 and VIctory-NVIDIA-RT, a warm-up you start on the Warm-up page also runs the layer's `victory warm`, which makes every pipeline your earlier sessions recorded. The first one can take half an hour; later ones add only new pipelines until an update changes them all. A warm-up before a launch skips this step.
 - **Parallel compiles:** each compile can hold over a gigabyte of RAM in the driver. Lower **Parallel compiles** on the Warm-up page if free RAM runs low.
 - **Delete build…** removes only recorded build outputs and moves the layer back to **Install**. Checkouts, caches, saves, game files and prefixes stay.
 - **Open data folder** holds the checkouts, preferences and logs.

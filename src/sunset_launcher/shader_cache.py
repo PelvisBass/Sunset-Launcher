@@ -29,6 +29,28 @@ TUXBOX_FILES = re.compile(
 )
 VKD3D_FILES = re.compile(r"vkd3d-proton(?:\.[^/]+)?\.cache(?:\.write)?")
 STEAM_FILES = re.compile(r"(?:[^/]+/)*[^/]+\.(?:dxvk-cache|foz|foz\.idx)")
+# The GPU driver's own pipeline cache for a Proton layer (NVIDIA's, or Mesa's for AMD and Intel).
+GPU_FILES = re.compile(r"(?:nvidia|mesa)/.+")
+GPU_CACHE = "runtime/gpu-cache"
+
+
+def configure_gpu_cache(project_dir: Path, environment: dict[str, str]) -> None:
+    """A driver pipeline cache of the layer's own, with no size cap, as Steam gives each game.
+
+    Outside Steam the drivers share one size-capped cache, and a game's
+    thousands of pipelines push its own older ones out, so they are made again in a later session."""
+    cache = project_dir / GPU_CACHE
+    for variable, value in (
+        ("__GL_SHADER_DISK_CACHE", "1"),
+        ("__GL_SHADER_DISK_CACHE_PATH", str(cache / "nvidia")),
+        ("__GL_SHADER_DISK_CACHE_SKIP_CLEANUP", "1"),
+        ("MESA_SHADER_CACHE_DIR", str(cache / "mesa")),
+        ("MESA_SHADER_CACHE_MAX_SIZE", "10G"),
+    ):
+        environment.setdefault(variable, value)
+    for folder in ("nvidia", "mesa"):
+        if environment["__GL_SHADER_DISK_CACHE_PATH" if folder == "nvidia" else "MESA_SHADER_CACHE_DIR"] == str(cache / folder):
+            (cache / folder).mkdir(parents=True, exist_ok=True)
 
 
 def configure_shader_cache(recipe: Recipe, project_dir: Path, environment: dict[str, str]) -> None:
@@ -96,6 +118,7 @@ def _locations(project_dir: Path, recipe: Recipe) -> Iterator[tuple[Path, re.Pat
                     yield tuxbox_prefix / WINE_LOCAL_APP_DATA / "Temp/tuxbox_shader_cache", TUXBOX_FILES
 
     if recipe.runtime == "proton":
+        yield project_dir / GPU_CACHE, GPU_FILES
         yield project_dir / "source", re.compile(r"vkd3d-proton\.cache(?:\.write)?")
         yield prefix / "shadercache", STEAM_FILES
 

@@ -13,15 +13,17 @@ import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock, Timer
 
+from . import downloads
 from .catalog import Project, Recipe
 from .proton import ProtonInstall, prepared_wine_launch, proton_game_path, proton_launch
-from .shader_cache import cache_files, configure_shader_cache, remove_cache_file
+from .shader_cache import cache_files, configure_gpu_cache, configure_shader_cache, remove_cache_file
 from .winsetup import detect as detect_build_tools
 from .winsetup import missing as missing_build_tools
 from .winsetup import with_tool_folders
@@ -59,8 +61,12 @@ _FILE_PROGRESS = re.compile(r"(?P<stage>.+): (?P<done>\d+) of (?P<total>\d+) (?P
 _TOTAL_PROGRESS = re.compile(r"\s*(?P<done>\d+)/(?P<total>\d+) \(\d+ s\)\s*")
 # XCL's opening line: "precompiling 41906 shaders into ..."
 _TOTAL_START = re.compile(r"precompiling (?P<total>\d+) shaders\b")
-# AvatarManz and Cool Fox: "4000 shaders in the cache, 52 s"
+# Cool Fox and its successors: "4000 shaders in the cache, 52 s"
 _COUNT_PROGRESS = re.compile(r"(?P<done>\d+) shaders in the cache[,\s]")
+# Their `victory warm`: "88629 pipelines known, 0 made before (56280b89f0ca09bd), 0 bad; 88629 to make, 8 processes",
+# then "40 of 88629, 12 s".
+_PIPELINES_START = re.compile(r"\d+ pipelines known, \d+ made before \([^)]*\), \d+ bad; (?P<total>\d+) to make\b")
+_PIPELINES_PROGRESS = re.compile(r"(?P<done>\d+) of (?P<total>\d+), \d+ s")
 
 
 def parse_warmup_progress(line: str) -> WarmupProgress | None:
@@ -68,6 +74,10 @@ def parse_warmup_progress(line: str) -> WarmupProgress | None:
     line = line.strip("\r\n")
     if match := _TOTAL_START.match(line):
         return WarmupProgress(0, int(match["total"]), "shaders")
+    if match := _PIPELINES_START.match(line):
+        return WarmupProgress(0, int(match["total"]), "pipelines", "pipelines")
+    if match := _PIPELINES_PROGRESS.fullmatch(line):
+        return WarmupProgress(int(match["done"]), int(match["total"]), "pipelines", "pipelines")
     if match := _TOTAL_PROGRESS.fullmatch(line):
         return WarmupProgress(int(match["done"]), int(match["total"]), "shaders")
     if match := _FILE_PROGRESS.match(line):
@@ -730,10 +740,26 @@ class Library:
         self, project: Project, recipe: Recipe, template: Sequence[str], game: Path,
         proton: ProtonInstall | None, runner: Runner, *, prepared_prefix: Path | None, options: str,
         console_mode: str | None, extra_args: Sequence[str] | None = None, extra_env: dict[str, str] | None = None,
-        proton_verb: str = "run",
+        proton_verb: str = "run", settings_as_args: bool = False, choices: dict[str, str] | None = None,
     ) -> tuple[list[str], dict[str, str] | None, Path]:
         """Build a launch-style command with the runtime, cache and setting environment a launch uses."""
         option_env, option_args = parse_launch_options(options)
+        user_settings = dict(option_env)
+        picked = [choice.option((choices or {}).get(choice.key)) for choice in recipe.choices]
+        # The picked settings count as the layer's own; their arguments go to the launch command only.
+        launch_env = (*recipe.launch_env, *(item for option in picked for item in option.settings))
+        if extra_args is None:
+            option_args = [*(arg for option in picked for arg in option.args), *option_args]
+        if settings_as_args and recipe.settings_arg:
+            # The user's entries come after the layer's, so they win.
+            moved = [(key, value) for key, value in (*launch_env, *option_env.items()) if key.startswith("VICTORY_")]
+            setting_args = [part for key, value in moved for part in (recipe.settings_arg, f"{key}={value}")]
+            if extra_args is None:
+                option_args = [*setting_args, *option_args]
+            else:
+                extra_args = [*setting_args, *extra_args]
+            launch_env = tuple((key, value) for key, value in launch_env if not key.startswith("VICTORY_"))
+            option_env = {key: value for key, value in option_env.items() if not key.startswith("VICTORY_")}
         values = self._values(project, recipe)
         values["game"] = proton_game_path(game) if recipe.runtime == "proton" else str(game)
         folder = game if game.is_dir() else game.parent
@@ -765,6 +791,7 @@ class Library:
                     proton, Path(command[0]), command[1:], self.prefix(project), game_path=game,
                     tool_path=host_environment().get("PATH"), verb=proton_verb,
                 )
+        extra_env = self._layer_files(project, recipe, runner, dict(extra_env or {}))
         if recipe.launch_paths:
             env = os.environ.copy() if env is None else env
             for variable, directory in recipe.launch_paths:
@@ -773,23 +800,102 @@ class Library:
         if recipe.shader_cache:
             env = os.environ.copy() if env is None else env
             configure_shader_cache(recipe, self.project_dir(project), env)
-        if recipe.launch_env:
+        if recipe.runtime == "proton" and env is not None:
+            configure_gpu_cache(self.project_dir(project), env)
+        if launch_env or recipe.run_env:
             env = os.environ.copy() if env is None else env
-            for key, value in recipe.launch_env:
+            for key, value in (*recipe.run_env, *launch_env):
                 env.setdefault(key, value)
         if extra_env:
             env = os.environ.copy() if env is None else env
             env.update(extra_env)
         if option_env:
-            # The user's settings win over recipe defaults such as WINEDLLOVERRIDES.
+            # The user's settings win over recipe defaults. DLL overrides add up instead: Wine reads the last
+            # entry for a DLL, so the user's still win.
             env = os.environ.copy() if env is None else env
             env.update(option_env)
-            runner.output("Launch settings: " + " ".join(f"{key}={value}" for key, value in option_env.items()) + "\n")
+            if "WINEDLLOVERRIDES" in option_env and "WINEDLLOVERRIDES" in extra_env:
+                env["WINEDLLOVERRIDES"] = f"{extra_env['WINEDLLOVERRIDES']};{option_env['WINEDLLOVERRIDES']}"
+        if user_settings:
+            runner.output("Launch settings: " + " ".join(f"{key}={value}" for key, value in user_settings.items()) + "\n")
         return command, env, Path(recipe.working_directory.format_map(values))
+
+    def downloads_root(self) -> Path:
+        return self.data / "downloads"
+
+    def _layer_files(self, project: Project, recipe: Recipe, runner: Runner, extra_env: dict[str, str]) -> dict[str, str]:
+        """The environment for files a layer loads at run time: Microsoft's compiler under Proton, fetched here if
+        it is missing, and NVIDIA's Streamline files when they were fetched."""
+        root = self.downloads_root()
+        if recipe.native_d3dcompiler and recipe.runtime == "proton":
+            beside = self._artifact(project, recipe).parent
+            if not (beside / "d3dcompiler_47.dll").exists() and downloads.ready(downloads.D3DCOMPILER, root) is None:
+                self._fetch(downloads.D3DCOMPILER, runner, timeout=20)
+            if downloads.place(downloads.D3DCOMPILER, root, "d3dcompiler_47.dll", beside):
+                previous = extra_env.get("WINEDLLOVERRIDES")
+                extra_env["WINEDLLOVERRIDES"] = f"{previous};d3dcompiler_47=n,b" if previous else "d3dcompiler_47=n,b"
+            else:
+                runner.output("Microsoft's D3DCompiler is missing, so Wine's own is used. Series S may not draw.\n")
+        if recipe.streamline and (sdk := downloads.ready(downloads.STREAMLINE, root)) is not None:
+            extra_env["VICTORY_STREAMLINE_DIR"] = proton_game_path(sdk) if recipe.runtime == "proton" else str(sdk)
+        return extra_env
+
+    def _fetch(self, archive: downloads.Archive, runner: Runner, *, timeout: float = 60) -> bool:
+        """Fetch an archive's files, reporting a failure instead of raising it."""
+        try:
+            downloads.fetch(archive, self.downloads_root(), runner.output, timeout=timeout, check=runner.check_cancelled)
+        except Cancelled:
+            raise
+        except (OSError, zipfile.BadZipFile, ValueError) as error:
+            runner.output(f"Could not download {archive.label}: {error}\n")
+            return False
+        return True
+
+    def needs_dlss_files(self, project: Project) -> bool:
+        recipe = recipe_for(project)
+        return recipe is not None and recipe.streamline and downloads.ready(downloads.STREAMLINE, self.downloads_root()) is None
+
+    def fetch_layer_files(self, project: Project, runner: Runner, *, dlss: bool = False) -> None:
+        """After a build: fetch what the layer loads at run time. A failure leaves the build as it is."""
+        recipe = recipe_for(project)
+        if recipe is None:
+            return
+        if recipe.native_d3dcompiler and recipe.runtime == "proton" and self._fetch(downloads.D3DCOMPILER, runner):
+            downloads.place(downloads.D3DCOMPILER, self.downloads_root(), "d3dcompiler_47.dll",
+                            self._artifact(project, recipe).parent)
+        if recipe.streamline and dlss:
+            self._fetch(downloads.STREAMLINE, runner, timeout=120)
+
+    def menu_file(self, project: Project, recipe: Recipe) -> Path | None:
+        """Where the layer's in-game menu saves its settings: inside the Proton prefix, or on Windows itself."""
+        if not recipe.menu_file:
+            return None
+        if recipe.runtime == "proton":
+            local = self.prefix(project) / "drive_c/users/steamuser/AppData/Local"
+        elif local_app_data := os.environ.get("LOCALAPPDATA"):
+            local = Path(local_app_data)
+        else:
+            return None
+        return local / recipe.menu_file
+
+    def _clear_menu_choices(self, project: Project, recipe: Recipe, runner: Runner) -> None:
+        """Take the in-game menu's saves for the launcher's game settings out, so the launcher's picks apply."""
+        path = self.menu_file(project, recipe)
+        if path is None or not recipe.menu_keys or not path.is_file():
+            return
+        # newline="": the file keeps its own line endings (\r\n from the game's menu).
+        with path.open(encoding="utf-8", errors="replace", newline="") as file:
+            lines = file.read().splitlines(keepends=True)
+        kept = [line for line in lines if line.split("=", 1)[0].strip() not in recipe.menu_keys]
+        if len(kept) != len(lines):
+            with path.open("w", encoding="utf-8", newline="") as file:
+                file.write("".join(kept))
+            runner.output(f"Game settings from the launcher replace {len(lines) - len(kept)} saved by the in-game menu.\n")
 
     def launch(
         self, project: Project, raw_game: str, proton: ProtonInstall | None,
         runner: Runner, *, prepared_prefix: Path | None = None, options: str = "", console_mode: str | None = None,
+        choices: dict[str, str] | None = None,
     ) -> None:
         recipe = self._require_recipe(project)
         if self.revision(project) is None:
@@ -797,14 +903,16 @@ class Library:
         game = self.game_path(project, raw_game)
         command, env, cwd = self._invocation(
             project, recipe, recipe.command, game, proton, runner,
-            prepared_prefix=prepared_prefix, options=options, console_mode=console_mode,
+            prepared_prefix=prepared_prefix, options=options, console_mode=console_mode, settings_as_args=True,
+            choices=choices,
         )
+        self._clear_menu_choices(project, recipe, runner)
         runner.run(command, cwd, env=env)
 
     def warm_up(
         self, project: Project, raw_game: str, proton: ProtonInstall | None, runner: Runner, *,
         prepared_prefix: Path | None = None, options: str = "", console_mode: str | None = None,
-        jobs: int | None = None,
+        jobs: int | None = None, choices: dict[str, str] | None = None, pipelines: bool = False,
     ) -> str:
         """Run the layer's own shader warm-up for the game and return the warmed revision.
 
@@ -828,13 +936,16 @@ class Library:
             # Proton's run verb loses the program's console output, and with it the progress.
             # runinprefix keeps it but skips the prefix setup that selects DXVK and vkd3d-proton.
             extra_env = {"WINEDLLOVERRIDES": PROTON_GRAPHICS_OVERRIDES, **extra_env}
-        command, env, cwd = self._invocation(
-            project, recipe, recipe.warmup, game, proton, runner, prepared_prefix=prepared_prefix,
-            options=options, console_mode=console_mode, extra_args=extra_args, extra_env=extra_env,
-            proton_verb="runinprefix",
-        )
-        if env is not None and (user := dict(parse_launch_options(options)[0]).get("WINEDLLOVERRIDES")):
-            # Keep both the graphics overrides and the user's own, such as d3dcompiler_47=n,b.
-            env["WINEDLLOVERRIDES"] = f"{PROTON_GRAPHICS_OVERRIDES};{user}"
-        runner.run(command, cwd, env=env)
+        templates = [recipe.warmup]
+        if pipelines and recipe.warmup_pipelines:
+            templates.append(recipe.warmup_pipelines)
+        for template in templates:
+            if template is recipe.warmup_pipelines:
+                runner.output("\nMaking the GPU pipelines earlier runs recorded…\n")
+            command, env, cwd = self._invocation(
+                project, recipe, template, game, proton, runner, prepared_prefix=prepared_prefix,
+                options=options, console_mode=console_mode, extra_args=extra_args, extra_env=dict(extra_env),
+                proton_verb="runinprefix", choices=choices,
+            )
+            runner.run(command, cwd, env=env)
         return revision

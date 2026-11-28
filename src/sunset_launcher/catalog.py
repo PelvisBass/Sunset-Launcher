@@ -12,6 +12,28 @@ class Step:
 
 
 @dataclass(frozen=True)
+class Option:
+    value: str
+    label: str
+    # Arguments for the launch command, and settings passed like launch_env.
+    args: tuple[str, ...] = ()
+    settings: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
+class Choice:
+    """A game setting the launcher offers as a picker. The first option is the default."""
+
+    key: str
+    label: str
+    options: tuple[Option, ...]
+    tip: str = ""
+
+    def option(self, value: str | None) -> Option:
+        return next((option for option in self.options if option.value == value), self.options[0])
+
+
+@dataclass(frozen=True)
 class Recipe:
     dependencies: tuple[str, ...]
     steps: tuple[Step, ...]
@@ -44,6 +66,23 @@ class Recipe:
     warmup_jobs_env: tuple[str, ...] = ()
     # What the upstream command reports: an overall total, a total per game file, a running count, or nothing.
     warmup_progress: Literal["total", "file", "count", "none"] = "none"
+    # A second warm-up command: the GPU pipelines earlier runs recorded, made ahead so a run does not stop for
+    # them. It can take long, so only a warm-up the user starts runs it, not one before a launch.
+    warmup_pipelines: tuple[str, ...] = ()
+    # A launch command that replaces the VICTORY_* environment with its own takes its settings as arguments:
+    # launch_env and Launch options' VICTORY_* entries are passed as `<settings_arg> NAME=VALUE` before {options}.
+    settings_arg: str = ""
+    # Environment the layer reads before it applies its settings: always passed as environment, never as settings_arg.
+    run_env: tuple[tuple[str, str], ...] = ()
+    # Game settings picked in the launcher. An in-game menu that saves the same settings to menu_file (under
+    # %LOCALAPPDATA%) would win over them, so its menu_keys are taken out of that file before each launch.
+    choices: tuple[Choice, ...] = ()
+    menu_file: str = ""
+    menu_keys: tuple[str, ...] = ()
+    # Under Proton: Microsoft's D3DCompiler beside the artifact, loaded over Wine's own (d3dcompiler_47=n,b).
+    native_d3dcompiler: bool = False
+    # NVIDIA's Streamline and DLSS files, fetched after the user agrees and named by VICTORY_STREAMLINE_DIR.
+    streamline: bool = False
 
 
 @dataclass(frozen=True)
@@ -152,12 +191,15 @@ VICTORY_WARMUP = dict(
     warmup_progress="file",
 )
 # Forks without upstream's warm-up. hyphennn's needs a list of shader hashes from an earlier run.
-NO_WARMUP = dict(warmup=(), warmup_jobs_arg="", warmup_jobs_env=(), warmup_progress="none")
-# AvatarManz and Cool Fox translate every shader with `victory shaders` and report a running count.
+NO_WARMUP = dict(warmup=(), warmup_jobs_arg="", warmup_jobs_env=(), warmup_progress="none", warmup_pipelines=())
+# Cool Fox and its successors translate every shader with `victory shaders` and report a running count.
 FORK_WARMUP = dict(
     warmup=("{artifact}", "shaders", "{game_dir}", "{options}"),
     warmup_jobs_arg="--jobs",
     warmup_progress="count",
+    # `victory warm`: every pipeline earlier runs wrote down, made in processes of its own. It keeps what it made
+    # per translator and driver, so a later one adds only new pipelines until an update changes the translator.
+    warmup_pipelines=("{artifact}", "warm", "{options}"),
 )
 
 VICTORY_RECIPES = {
@@ -180,12 +222,13 @@ VICTORY_RECIPES = {
             "Run cargo install --locked cargo-xwin. The repository selects its own Rust toolchain and Windows target.",
         ),
         options_hint=VICTORY_OPTIONS,
-        launch_note="Linux compatibility is experimental. Some titles may need a native Microsoft D3DCompiler DLL "
-        "in the Proton prefix.",
+        launch_note="Linux compatibility is experimental.",
         rust_target="x86_64-pc-windows-msvc",
         shader_cache="victory",
         **VICTORY_WARMUP,
         console_modes=VICTORY_CONSOLES,
+        # Wine's compiler cannot build some of the title's shaders, which shows in Series S mode.
+        native_d3dcompiler=True,
     ),
     "windows": Recipe(
         dependencies=("cargo",),
@@ -294,39 +337,6 @@ DEXNOM_RECIPES = {
 }
 
 
-AVATARMANZ_REPOSITORY = "https://github.com/avatarmanz/VIctory-7900XTX"
-# Standard profile from the fork's scripts/play.ps1. Launch options can override these settings.
-AVATARMANZ_LAUNCH_ENV = (
-    ("VICTORY_TEXTURE_NO_WAIT", "1"), ("VICTORY_RELAY", "2"), ("VICTORY_WIDE_BACK", "1"),
-    ("VICTORY_CARD_REHASH_RUNS", "1"), ("VICTORY_JOIN_COPIES", "1"), ("VICTORY_INDIRECT_WINDOW", "1"),
-    ("VICTORY_RELAY_COPY", "1"), ("VICTORY_CARD_STEPS", "2"), ("VICTORY_INDIRECT_BATCH", "2"),
-    ("VICTORY_MAP_THREADS", "1"), ("VICTORY_TITLE_PRIORITIES", "0"), ("VICTORY_CARD_AWAKE", "1"),
-    ("VICTORY_SHOW_AFTER", "1"), ("VICTORY_AMBIENT", "0.8"), ("VICTORY_D3D12_DRED", "light"),
-    ("VICTORY_SKIP_PIPELINES", "none"), ("VICTORY_THIN", "1"), ("VICTORY_JOIN_PARTS", "8"),
-    ("VICTORY_UPLOAD_AHEAD", "1"),
-)
-AVATARMANZ_BUILD = ("--locked", "--profile", "diag", "--target-dir", "target", "-p", "victory",
-                    "--features", "diagnostics", "--bin", "victory")
-AVATARMANZ_RECIPES = {
-    host: replace(
-        VICTORY_RECIPES[host],
-        steps=(Step((*command, *AVATARMANZ_BUILD), "Build AvatarManz"),),
-        artifact=VICTORY_RECIPES[host].artifact.replace("/release/", "/diag/"),
-        launch_paths=VICTORY_LAUNCH_PATHS,
-        **FORK_WARMUP,
-        launch_env=AVATARMANZ_LAUNCH_ENV,
-        launch_note=(
-            "Proton launch is experimental. Upstream tests on Windows with a Radeon RX 7900 XTX."
-            if host == "linux" else "Upstream tests on a Radeon RX 7900 XTX."
-        ),
-    )
-    for host, command in (
-        ("linux", ("cargo", "xwin", "build", "--target", "x86_64-pc-windows-msvc")),
-        ("windows", ("cargo", "build")),
-    )
-}
-
-
 # The original codec-d/cool_fox repository is unavailable. This mirror has the same history.
 COOL_FOX_REPOSITORY = "https://github.com/DoubleGhosty/cool_fox"
 COOL_FOX_PREVIOUS = ("https://github.com/codec-d/cool_fox",)
@@ -416,6 +426,126 @@ SCARLETT_RECIPES = {
 }
 
 
+NVIDIA_RT_REPOSITORY = "https://github.com/Kemerd/VIctory-NVIDIA-RT"
+# PLAY.cmd only builds `victory.exe play` arguments, so the launcher runs `play` itself. `play` sets its own
+# switches and drops other VICTORY_* variables, so the preset goes in as --set. Resolution, DLSS, frame
+# generation, HDR and the console are left to the in-game F1 menu, which saves them.
+# PLAY.cmd's "fast" speed setting, its recommended one.
+NVIDIA_RT_FAST = (
+    ("VICTORY_PIPELINE_WAIT_ONCE", "1"), ("VICTORY_PIPELINE_WAIT_BACKLOG", "64"),
+    ("VICTORY_PIPELINE_SLOW_WORKERS", "8"), ("VICTORY_TEXTURE_LOOK_ONCE", "1"), ("VICTORY_TEXTURE_READ_AHEAD", "1"),
+    ("VICTORY_STAGING_NO_ZERO", "1"), ("VICTORY_SEND_COPIED_FIND", "1"), ("VICTORY_FILES_BUFFERED", "1"),
+    ("VICTORY_MEMORY_FRESH", "1"), ("VICTORY_MEMORY_ARENAS_AHEAD", "1"), ("VICTORY_MEMORY_QUIET", "1"),
+    ("VICTORY_MEMORY_LAND_SENT", "1"), ("VICTORY_MEMORY_ASK_RUNS", "1"), ("VICTORY_MEMORY_LEAN", "1"),
+    ("VICTORY_MEMORY_DIRTY", "1"), ("VICTORY_MEMORY_BUFFER_FAULTS", "1"), ("VICTORY_MEMORY_FAULT_PAGES", "40000"),
+    ("VICTORY_REFRESH_PROBE_US", "300"), ("VICTORY_DECLARE_ACROSS_LISTS", "1"), ("VICTORY_REFRESH_PROBE_TEXTURES", "1"),
+    ("VICTORY_REFRESH_SPLIT", "1"), ("VICTORY_WAIT_SPLIT", "1"), ("VICTORY_DSTORAGE_STATS", "1"),
+    ("VICTORY_PIPELINE_PIECES", "1"), ("VICTORY_PIPELINE_PIECES_REFUSE_UNTRANSLATED", "1"),
+    ("VICTORY_PIPELINE_PIECES_ONLY", "graphics"), ("VICTORY_REFRESH_SET", "1"), ("VICTORY_TITLE_WRITE_RANGE", "1"),
+    ("VICTORY_UNDER_PARTS", "1"), ("VICTORY_SEND_THREAD", "1"),
+)
+# PLAY.cmd's ten questions, as `play` options and switches. Ray tracing is a choice of its own here.
+NVIDIA_RT_CHOICES = (
+    Choice("console", "Console", (
+        Option("series-x", "Series X"), Option("series-s", "Series S", args=("--series-s",)),
+    ), tip="Series S renders at 1280x720 inside: faster and much softer. For weaker cards."),
+    Choice("resolution", "Resolution", (
+        Option("1440", "2560 × 1440", args=("--res", "1440")),
+        Option("1080to1440", "1080p upscaled to 1440p", args=("--res", "1080to1440")),
+        Option("4k", "3840 × 2160 (4K)", args=("--res", "4k")),
+        Option("wide", "5120 × 1440 (32:9)", args=("--res", "wide")),
+        Option("ultrawide", "3440 × 1440 (21:9)", args=("--res", "ultrawide")),
+    ), tip="The output size. Series X only: Series S keeps its own."),
+    Choice("window", "Window", (
+        Option("full", "Fullscreen", settings=(("VICTORY_FULLSCREEN", "1"),)),
+        Option("window", "Windowed", settings=(("VICTORY_FULLSCREEN", "0"),)),
+    )),
+    Choice("dlss", "DLSS", (
+        Option("quality", "Quality", args=("--dlss", "quality")),
+        Option("balanced", "Balanced", args=("--dlss", "balanced")),
+        Option("performance", "Performance", args=("--dlss", "performance")),
+        Option("dlaa", "DLAA (native, slowest)", args=("--dlss", "dlaa")),
+        Option("off", "Off (the game's upscaling)", args=("--dlss", "off")),
+    ), tip="Needs NVIDIA's DLSS files, which the launcher offers to download when it builds."),
+    Choice("framegen", "Frame generation", (
+        Option("ready", "Ready, switched on with F1"),
+        *(Option(str(times), f"{times}x", args=("--framegen", str(times))) for times in range(2, 7)),
+        Option("none", "Not loaded", args=("--no-framegen-ready",)),
+    ), tip="DLSS frame generation needs an RTX 40 or later; 3x to 6x need an RTX 50. Not loaded leaves a little "
+           "more memory for textures."),
+    Choice("reflex", "NVIDIA Reflex", (
+        Option("boost", "On + boost", settings=(("VICTORY_REFLEX", "boost"),)),
+        Option("on", "On", settings=(("VICTORY_REFLEX", "on"),)),
+        Option("off", "Off"),
+    ), tip="Lower input lag. Frame generation turns it on anyway."),
+    Choice("hdr", "HDR10", (
+        Option("off", "Off", settings=(("VICTORY_HDR", "0"),)),
+        Option("on", "On", settings=(("VICTORY_HDR", "1"),)),
+    ), tip="Turn HDR on in the system first."),
+    Choice("fps", "Frame cap", tuple(
+        Option(cap, label, args=("--fps", cap))
+        for cap, label in (("1000", "None"), ("30", "30"), ("60", "60"), ("120", "120"), ("144", "144"))
+    )),
+    Choice("interface", "Ultrawide interface", (
+        Option("band", "16:9 in the middle"),
+        Option("stretch", "Stretched", settings=(("VICTORY_UI_LETTERBOX", "0"),)),
+    ), tip="Menus and the interface on 21:9 and 32:9 screens. 16:9 screens see no difference."),
+    Choice("speed", "Speed", (
+        Option("fast", "Fast", settings=NVIDIA_RT_FAST),
+        Option("plain", "Plain"),
+    ), tip="Fast: pipelines from pieces and a parallel submitting thread. Plain: the upstream release's settings."),
+    Choice("rt", "Ray tracing", (
+        Option("off", "Off"),
+        Option("on", "On (experimental)", settings=(("VICTORY_RT_NATIVE", "1"),)),
+    ), tip="This fork's native ray tracing: the game's own, on the RTX cores (VICTORY_RT_NATIVE). Experimental, and "
+           "about 5 to 8 fps for now. The older path, the F1 menu's \"RAY TRACING (SLOW, BROKEN)\", is turned off."),
+)
+# What the F1 menu saves for these settings; PLAY.cmd takes the same out before each start. The menu's older
+# "RAY TRACING (SLOW, BROKEN)", VICTORY_BVH_BUILDER, goes too: the Ray tracing choice is the fork's native path,
+# VICTORY_RT_NATIVE, and Off should mean neither.
+NVIDIA_RT_MENU_KEYS = (
+    "VICTORY_MENU_RES", "VICTORY_MENU_DLSS", "VICTORY_MENU_FRAMEGEN", "VICTORY_MENU_FPS", "VICTORY_MENU_CONSOLE",
+    "VICTORY_HDR", "VICTORY_DISPLAY_WIDE", "VICTORY_RT_NATIVE", "VICTORY_BVH_BUILDER", "VICTORY_UI_LETTERBOX",
+    "VICTORY_FULLSCREEN", "VICTORY_REFLEX",
+)
+# PLAY.cmd's loading fix, always on.
+NVIDIA_RT_LAUNCH_ENV = (("VICTORY_PIPELINE_SAMPLER_TABLE", "1"),)
+NVIDIA_RT_RECIPES = {
+    host: replace(
+        recipe,
+        steps=(replace(recipe.steps[0], label="Build VIctory-NVIDIA-RT"),),
+        command=("{artifact}", "play", "{game}", "{options}"),
+        settings_arg="--set",
+        streamline=True,
+        # The first start of a new build plays briefly, then restarts itself through PowerShell, which Proton
+        # does not have: the game would just close. A later start runs at full speed anyway.
+        launch_env=NVIDIA_RT_LAUNCH_ENV + ((("VICTORY_WARMUP_RESTART", "0"),) if host == "linux" else ()),
+        launch_paths=(("VICTORY_CACHE_DIR", "cache"), ("VICTORY_DATA_DIR", "data")),
+        # Proton reports Windows 10, and `play` then offers Microsoft's Direct3D 12 runtime for Windows 10's own,
+        # which cannot run the game's shaders. Proton's Direct3D 12 is vkd3d-proton (shader model 6.9 on an RTX 5070),
+        # which neither needs nor loads it. The fork's own stand-in for the version skips the offer; its shader
+        # model check still runs. A Windows 11 build number.
+        # Proton's NVAPI has no NvAPI_D3D_SetReflexSync, so with frame generation Streamline logs an error for it
+        # every frame (tens of thousands a session). `streamline=off` drops Streamline's own messages only; the
+        # fork's lines about it, such as "DLSS loaded", stay. VICTORY_LOG=info in Launch options brings them back.
+        run_env=(("VICTORY_WINDOWS_BUILD", "22631"), ("VICTORY_LOG", "info,streamline=off")) if host == "linux" else (),
+        **FORK_WARMUP,
+        console_modes=(),
+        choices=NVIDIA_RT_CHOICES,
+        menu_file="victory/victory-settings.txt",
+        menu_keys=NVIDIA_RT_MENU_KEYS,
+        options_hint="e.g. VICTORY_X=1 · other play arguments",
+        launch_note=(
+            "Game settings here win over the same ones in the F1 menu, which still sets everything else. "
+            + "DLSS and frame generation use NVIDIA's files, which the launcher offers to download when it builds. "
+            + ("The first start after a build runs slowly; start it again. F1 changes that restart the game "
+               "close it under Proton instead, so start it again." if host == "linux" else "")
+        ),
+    )
+    for host, recipe in VICTORY_RECIPES.items()
+}
+
+
 PROJECTS = (
     Project(
         key="xcl",
@@ -468,16 +598,6 @@ PROJECTS = (
         accent="#fa9690",
     ),
     Project(
-        key="avatarmanz",
-        name="AvatarManz",
-        description="Victory fork tuned for the AMD Radeon RX 7900 XTX.",
-        repository=AVATARMANZ_REPOSITORY,
-        setup_url=f"{AVATARMANZ_REPOSITORY}#how-to-run-it",
-        recipes=AVATARMANZ_RECIPES,
-        game_input="file",
-        accent="#aed3fc",
-    ),
-    Project(
         key="cool_fox",
         name="Cool Fox",
         description="Victory fork with graphics and memory residency tuning.",
@@ -497,5 +617,15 @@ PROJECTS = (
         recipes=SCARLETT_RECIPES,
         game_input="file",
         accent="#9fe0a8",
+    ),
+    Project(
+        key="nvidia_rt",
+        name="VIctory-NVIDIA-RT",
+        description="VIctory-NVIDIA fork with faster rendering, 32:9 and HDR10, and work toward the title's ray tracing.",
+        repository=NVIDIA_RT_REPOSITORY,
+        setup_url=f"{NVIDIA_RT_REPOSITORY}#the-launcher-playcmd",
+        recipes=NVIDIA_RT_RECIPES,
+        game_input="file",
+        accent="#b7e36a",
     ),
 )

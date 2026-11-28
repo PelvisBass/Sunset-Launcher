@@ -69,6 +69,8 @@ QPushButton[quiet="true"] {
 QPushButton[quiet="true"]:hover { background: #34263e; }
 QPushButton[quiet="true"]:focus { border-color: #f6a6cb; }
 QPushButton[quiet="true"]:disabled { color: #87758c; }
+QPushButton[disclosure="true"] { text-align: left; color: #e9dceb; font-weight: 650; padding: 4px 6px 4px 0; border-color: transparent; background: transparent; }
+QPushButton[disclosure="true"]:hover { color: #f6a6cb; background: transparent; }
 QPushButton[nav="true"] {
     text-align: left;
     padding-left: 13px;

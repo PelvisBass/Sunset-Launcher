@@ -44,8 +44,10 @@ class ShaderCacheTests(unittest.TestCase):
             self.write(self.library.project_dir(self.projects["victory"]) / "runtime/cache/shaders/ab" / ("f" * 62)),
             self.write(self.library.source(project) / "vkd3d-proton.cache.write", b"user file"),
         ]
+        # The layer's own GPU driver cache counts too, and goes with a clear.
+        removed.append(self.write(self.library.project_dir(project) / "runtime/gpu-cache/nvidia/GLCache/x/y.toc", b"abcdef"))
         with patch.object(sys, "platform", "linux"):
-            self.assertEqual(self.library.shader_usage(project, self.runner), 16)
+            self.assertEqual(self.library.shader_usage(project, self.runner), 22)
             self.assertEqual(self.library.clear_shader_cache(project, self.runner), 0)
         self.assertTrue(all(not path.exists() for path in removed))
         self.assertTrue(all(path.is_file() for path in preserved))

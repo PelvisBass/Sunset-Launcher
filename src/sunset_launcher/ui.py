@@ -534,7 +534,8 @@ class Job(QObject):
         self, library: Library, projects: tuple[Project, ...], action: str,
         game: str, proton: ProtonInstall | None, prepared_prefix: Path | None, launch_options: str = "",
         *, console_mode: str | None = None, warm_jobs: int | None = None, warm_first: bool = False,
-        install_tools: bool = False,
+        install_tools: bool = False, dlss: bool = False, choices: dict[str, str] | None = None,
+        warm_pipelines: bool = False,
     ):
         super().__init__()
         self.library = library
@@ -548,6 +549,9 @@ class Job(QObject):
         self.warm_jobs = warm_jobs
         self.warm_first = warm_first
         self.install_tools = install_tools
+        self.dlss = dlss
+        self.choices = choices
+        self.warm_pipelines = warm_pipelines
         self.runner = Runner(self.line.emit)
 
     def _warm(self, project: Project, output) -> None:
@@ -565,6 +569,7 @@ class Job(QObject):
             revision = self.library.warm_up(
                 project, self.game, self.proton, self.runner, prepared_prefix=self.prepared_prefix,
                 options=self.launch_options, console_mode=self.console_mode, jobs=self.warm_jobs,
+                choices=self.choices, pipelines=self.warm_pipelines,
             )
         finally:
             self.runner.output = output
@@ -628,7 +633,7 @@ class Job(QObject):
                             self.library.launch(
                                 project, self.game, self.proton, self.runner,
                                 prepared_prefix=self.prepared_prefix, options=self.launch_options,
-                                console_mode=self.console_mode,
+                                console_mode=self.console_mode, choices=self.choices,
                             )
                             output("Exited successfully.\n")
                         elif self.action == "delete":
@@ -640,6 +645,7 @@ class Job(QObject):
                         else:
                             revision = self.library.build(project, self.action == "update", self.runner)
                             output(f"Built revision {revision}.\n")
+                            self.library.fetch_layer_files(project, self.runner, dlss=self.dlss)
                     except Cancelled:
                         if not shader_job and self.action != "check":
                             self.state.emit(project.key, "Stopped")
@@ -1035,6 +1041,33 @@ class MainWindow(QMainWindow):
         mode_layout.addWidget(self.console_mode)
         layout.addWidget(self.console_mode_box)
 
+        # A layer's own game settings, such as VIctory-NVIDIA-RT's DLSS and ray tracing.
+        self.choices_box = QWidget()
+        self.choices_grid = QGridLayout(self.choices_box)
+        self.choices_grid.setContentsMargins(0, 2, 0, 4)
+        self.choices_grid.setHorizontalSpacing(12)
+        self.choices_grid.setVerticalSpacing(7)
+        self.choices_grid.setColumnStretch(0, 1)
+        self.choice_controls: dict[str, QComboBox | SegmentedControl] = {}
+        # Folded away by default behind one line that says what differs from the defaults.
+        self.choices_section = QWidget()
+        section_layout = QVBoxLayout(self.choices_section)
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.setSpacing(4)
+        header = QHBoxLayout()
+        self.choices_toggle = button("", quiet=True)
+        self.choices_toggle.setProperty("disclosure", True)
+        self.choices_toggle.setCheckable(True)
+        self.choices_toggle.setChecked(self.settings.value("ui/gameSettingsOpen", False, type=bool))
+        self.choices_toggle.toggled.connect(self._toggle_choices)
+        self.choices_summary = label("", "muted")
+        header.addWidget(self.choices_toggle)
+        header.addStretch()
+        header.addWidget(self.choices_summary)
+        section_layout.addLayout(header)
+        section_layout.addWidget(self.choices_box)
+        layout.addWidget(self.choices_section)
+
         options_title = label("Launch options")
         options_title.setProperty("fieldLabel", True)
         layout.addWidget(options_title)
@@ -1194,14 +1227,26 @@ class MainWindow(QMainWindow):
         self.warm_jobs.activated.connect(lambda: self.settings.setValue("warmup/jobs", self.warm_jobs.currentData()))
         options.addWidget(self.warm_jobs, 0, 1, 2, 1, Qt.AlignmentFlag.AlignVCenter)
         options.addWidget(rule(), 2, 0, 1, 2)
+        self.warm_pipelines = QCheckBox("Also make GPU pipelines from earlier sessions")
+        self.warm_pipelines.setChecked(self.settings.value("warmup/pipelines", True, type=bool))
+        self.warm_pipelines.toggled.connect(lambda on: self.settings.setValue("warmup/pipelines", on))
+        options.addWidget(self.warm_pipelines, 3, 0, 1, 2)
+        self.warm_pipelines_note = label(
+            "What you wait for in game is the GPU making pipelines, not the shader translation. This makes every "
+            "pipeline your earlier sessions recorded, so the game finds them ready. The first time can take half an "
+            "hour; later ones only add new pipelines, until an update changes them all. Cool Fox, Scarlett 3070 and "
+            "VIctory-NVIDIA-RT. A warm-up before a launch skips this.", "muted", wrap=True,
+        )
+        options.addWidget(self.warm_pipelines_note, 4, 0, 1, 2)
+        options.addWidget(rule(), 5, 0, 1, 2)
         self.warm_before_launch = QCheckBox("Warm up before launch after an update")
         self.warm_before_launch.setChecked(self.settings.value("warmup/beforeLaunch", True, type=bool))
         self.warm_before_launch.toggled.connect(lambda on: self.settings.setValue("warmup/beforeLaunch", on))
-        options.addWidget(self.warm_before_launch, 3, 0, 1, 2)
+        options.addWidget(self.warm_before_launch, 6, 0, 1, 2)
         options.addWidget(label(
-            "Launch first runs the warm-up when the layer was rebuilt or the shared game changed since the last one, "
-            "and skips it when nothing changed.", "muted", wrap=True,
-        ), 4, 0, 1, 2)
+            "Launch first translates the shaders when the layer was rebuilt or the shared game changed since the "
+            "last warm-up, and skips it when nothing changed.", "muted", wrap=True,
+        ), 7, 0, 1, 2)
         options.setColumnStretch(0, 1)
         layout.addWidget(settings)
         layout.addStretch()
@@ -1255,10 +1300,11 @@ class MainWindow(QMainWindow):
         self.note.setVisible(bool(note))
         self.repository.setEnabled(not project.upstream_unavailable)
         self.repository.setToolTip(project.upstream_unavailable)
-        self.preset.setVisible(recipe is not None and bool(recipe.launch_env))
+        self.preset.setVisible(recipe is not None and bool(recipe.launch_env or recipe.choices))
         self._restore_proton()
         modes = recipe.console_modes if recipe is not None else ()
         self.console_mode_box.setVisible(bool(modes))
+        self._build_choices(project)
         self.console_mode.clear()
         for mode in modes:
             self.console_mode.addItem(CONSOLE_LABELS.get(mode, mode.replace("-", " ").title()), mode)
@@ -1273,6 +1319,72 @@ class MainWindow(QMainWindow):
         )
         self.launch_options.setEnabled(recipe is not None)
         self._refresh()
+
+    def _layer_choices(self, project: Project) -> dict[str, str]:
+        recipe = recipe_for(project)
+        return {
+            choice.key: self.settings.value(f"choices/{project.key}/{choice.key}", choice.options[0].value, type=str)
+            for choice in (recipe.choices if recipe is not None else ())
+        }
+
+    def _build_choices(self, project: Project):
+        """One picker per game setting of the selected layer: buttons for two options, a list for more."""
+        while self.choices_grid.count():
+            widget = self.choices_grid.takeAt(0).widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self.choice_controls = {}
+        recipe = recipe_for(project)
+        choices = recipe.choices if recipe is not None else ()
+        self.choices_section.setVisible(bool(choices))
+        saved = self._layer_choices(project)
+        for row, choice in enumerate(choices):
+            title = label(choice.label)
+            title.setProperty("fieldLabel", True)
+            control: QComboBox | SegmentedControl = SegmentedControl() if len(choice.options) <= 2 else QComboBox()
+            if isinstance(control, QComboBox):
+                control.setFixedWidth(250)  # One width, so the lists line up
+            for option in choice.options:
+                control.addItem(option.label, option.value)
+            control.setCurrentIndex(max(0, control.findData(saved[choice.key])))
+            control.setToolTip(choice.tip)
+            title.setToolTip(choice.tip)
+            title.setBuddy(control)
+            control.activated.connect(lambda index, key=choice.key, picker=control: self._save_choice(key, picker))
+            self.choices_grid.addWidget(title, row, 0)
+            self.choices_grid.addWidget(control, row, 1, alignment=Qt.AlignmentFlag.AlignRight)
+            self.choice_controls[choice.key] = control
+        self._toggle_choices(self.choices_toggle.isChecked())
+
+    def _toggle_choices(self, opened: bool):
+        self.choices_toggle.setText(("▾" if opened else "▸") + "  Game settings")
+        self.choices_toggle.setToolTip("Hide the game settings." if opened else "Show the game settings.")
+        self.choices_box.setVisible(opened)
+        self.settings.setValue("ui/gameSettingsOpen", opened)
+        self._summarise_choices()
+
+    def _summarise_choices(self):
+        """What differs from the defaults, so a folded section still says what a launch will use."""
+        recipe = recipe_for(self.selected)
+        picked = self._layer_choices(self.selected)
+        changed = [
+            f"{choice.label}: {choice.option(picked[choice.key]).label}"
+            for choice in (recipe.choices if recipe is not None else ())
+            if choice.option(picked[choice.key]) is not choice.options[0]
+        ]
+        if not changed:
+            text = "Defaults"
+        elif len(changed) <= 2:
+            text = " · ".join(item.split(": ", 1)[1] for item in changed)
+        else:
+            text = f"{len(changed)} changed"
+        self.choices_summary.setText("" if self.choices_toggle.isChecked() else text)
+        self.choices_summary.setToolTip("\n".join(changed) or "Every game setting is at its default.")
+
+    def _save_choice(self, key: str, control: QComboBox | SegmentedControl):
+        self.settings.setValue(f"choices/{self.selected.key}/{key}", control.currentData())
+        self._summarise_choices()
 
     def _save_console_mode(self):
         self.settings.setValue(f"consoleMode/{self.selected.key}", self.console_mode.currentData())
@@ -1396,6 +1508,31 @@ class MainWindow(QMainWindow):
         if winsetup.missing(self.build_tools) and self._confirm_build_tools("Install the missing build tools?"):
             self._start((), "tools", install_tools=True)
 
+    def _agree_to_dlss_files(self, projects: tuple[Project, ...]) -> bool:
+        """Whether this build may fetch NVIDIA's DLSS files: asked once, then remembered when the answer is yes."""
+        if not any(self.library.needs_dlss_files(project) for project in projects):
+            return False
+        if self.settings.value("downloads/nvidiaStreamline", False, type=bool):
+            return True
+        box = QMessageBox(self)
+        box.setWindowTitle("DLSS files")
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText("Download NVIDIA's DLSS files?")
+        box.setInformativeText(
+            "DLSS and DLSS frame generation need NVIDIA Streamline 2.14.16: 8 files, about 70 MB, from NVIDIA's own "
+            "GitHub release. They are NVIDIA's files under NVIDIA's license, which is saved beside them, and each is "
+            "checked against the copy the launcher was tested with.\n\n"
+            "Without them the game runs with its own upscaling and no frame generation."
+        )
+        download = box.addButton("Download", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(download)
+        box.exec()
+        agreed = box.clickedButton() is download
+        if agreed:
+            self.settings.setValue("downloads/nvidiaStreamline", True)
+        return agreed
+
     def _confirm_build_tools(self, lead: str) -> bool:
         """Ask before installing anything. Returns whether to go ahead with winget."""
         needed = winsetup.missing(self.build_tools)
@@ -1477,13 +1614,17 @@ class MainWindow(QMainWindow):
         self.warm_note.setText({
             "total": "Shows overall progress and time left.",
             "file": "Works through the game's files one at a time. Progress and time left are for the current file.",
-            "count": "Reports how many shaders are cached so far, without a total, so there is no time left estimate.",
+            "count": "Reports how many shaders are cached so far, without a total, so there is no time left estimate. "
+                     "Pipelines, when they follow, show a total and time left.",
             "none": "Prepares shaders with its own per-title profiles and reports no counts. Follow it in Activity.",
-        }[kind] if recipe is not None and recipe.warmup else "Install XCL, Victory, AvatarManz, Cool Fox or TuxBox to warm up shaders.")
+        }[kind] if recipe is not None and recipe.warmup else "Install XCL, Victory, Cool Fox, Scarlett 3070, VIctory-NVIDIA-RT or TuxBox to warm up shaders.")
         self.warm_captions["left"].setText("Time left (file)" if kind == "file" else "Time left")
         self.warm_subject.setText(project.name if project is not None else "")
+        self.warm_pipelines.setEnabled(recipe is not None and bool(recipe.warmup_pipelines))
         if active:
-            self.warm_title.setText("Warming up shaders")
+            self.warm_title.setText(
+                "Making GPU pipelines" if progress is not None and progress.unit == "pipelines" else "Warming up shaders"
+            )
         elif self.warm_outcome:
             self.warm_title.setText(self.warm_outcome)
         else:
@@ -1825,15 +1966,23 @@ class MainWindow(QMainWindow):
     def _show_preset(self, project: Project):
         """List a layer's built-in settings, so Launch options can override one knowingly."""
         recipe = recipe_for(project)
-        if recipe is None or not recipe.launch_env:
+        if recipe is None:
+            return
+        picked = self._layer_choices(project)
+        entries = [
+            *recipe.launch_env,
+            *(item for choice in recipe.choices for item in choice.option(picked.get(choice.key)).settings),
+        ]
+        if not entries:
             return
         dialog = QDialog(self)
         dialog.setWindowTitle(f"{project.name} preset")
         dialog.resize(560, 520)
         layout = QVBoxLayout(dialog)
         layout.addWidget(label(
-            f"{project.name} launches with these {len(recipe.launch_env)} settings from its upstream launcher. "
-            "To change one, add it with a new value to Launch options, such as VICTORY_LOG=warn.",
+            f"{project.name} launches with these {len(entries)} settings from its upstream launcher"
+            + (" and your game settings" if recipe.choices else "")
+            + ". To change one, add it with a new value to Launch options, such as VICTORY_LOG=warn.",
             "muted", wrap=True,
         ))
         try:
@@ -1842,7 +1991,7 @@ class MainWindow(QMainWindow):
             overrides = {}
         lines = [
             f"{key}={overrides[key]}    (yours, preset {value})" if key in overrides else f"{key}={value}"
-            for key, value in recipe.launch_env
+            for key, value in entries
         ]
         listing = QPlainTextEdit("\n".join(lines))
         listing.setObjectName("log")
@@ -1852,7 +2001,7 @@ class MainWindow(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         copy = buttons.addButton("Copy all", QDialogButtonBox.ButtonRole.ActionRole)
         copy.clicked.connect(lambda: QApplication.clipboard().setText(
-            " ".join(f"{key}={value}" for key, value in recipe.launch_env)
+            " ".join(f"{key}={value}" for key, value in entries)
         ))
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -1893,13 +2042,17 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Launch options", str(error))
                 return
         uses_layer = action in {"launch", "warm"}
+        dlss = action in {"build", "update"} and self._agree_to_dlss_files(projects)
         jobs = self.warm_jobs.currentData() or None
         job = Job(
             self.library, projects, action, game, self._chosen_proton(), self._prepared_prefix(), options,
             console_mode=self.console_mode.currentData() if uses_layer else None,
             warm_jobs=jobs if uses_layer else None,
             warm_first=action == "launch" and self.warm_before_launch.isChecked() and self._needs_warmup(projects[0], game),
-            install_tools=install_tools,
+            install_tools=install_tools, dlss=dlss,
+            choices=self._layer_choices(projects[0]) if uses_layer else None,
+            # Only a warm-up started here makes pipelines: a launch should not wait half an hour first.
+            warm_pipelines=action == "warm" and self.warm_pipelines.isChecked(),
         )
         if self.thread is not None:
             self._job_after_startup_check = job

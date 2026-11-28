@@ -62,7 +62,7 @@ class DesktopTests(unittest.TestCase):
                 self.app.processEvents()
                 self.assertNotIn("tuxbox", window.rows)
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["xcl", "victory", "hyphennn", "dexnom", "avatarmanz", "cool_fox", "scarlett_3070"])
+                                 ["xcl", "victory", "hyphennn", "dexnom", "cool_fox", "scarlett_3070", "nvidia_rt"])
                 for key, row in window.rows.items():
                     row.click()
                     self.assertTrue(window.runtime_box.isHidden(), key)
@@ -96,6 +96,57 @@ class DesktopTests(unittest.TestCase):
                 self.assertEqual(title, "Scarlett 3070 preset")
                 self.assertIn("VICTORY_TEXTURE_MIP_DROP=0    (yours, preset 1)", text)
                 self.assertIn("VICTORY_CARD_BUFFERS_MB=1024", text)
+            finally:
+                window.close()
+
+    @patch.object(Library, "revision", lambda self, project: "a" * 40)  # Every layer installed
+    def test_game_settings_are_picked_saved_and_sent_with_a_launch(self):
+        from PySide6.QtWidgets import QComboBox
+
+        with TemporaryDirectory() as directory, patch.object(sys, "platform", "win32"):
+            data = Path(directory)
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.show()
+                window.rows["victory"].click()
+                self.assertTrue(window.choices_section.isHidden())
+                window.rows["nvidia_rt"].click()
+                self.assertFalse(window.choices_section.isHidden())
+                self.assertTrue(window.console_mode_box.isHidden())
+                # Folded at first, with a summary in its place.
+                self.assertTrue(window.choices_box.isHidden())
+                self.assertEqual(window.choices_summary.text(), "Defaults")
+                window.choices_toggle.click()
+                self.assertFalse(window.choices_box.isHidden())
+                self.assertEqual(window.choices_summary.text(), "")
+                controls = window.choice_controls
+                self.assertEqual(len(controls), 11)
+                self.assertNotIsInstance(controls["console"], QComboBox)  # Two options: buttons
+                self.assertEqual((controls["console"].currentData(), controls["dlss"].currentData()), ("series-x", "quality"))
+                for key, value in (("console", "series-s"), ("dlss", "performance"), ("rt", "on")):
+                    index = controls[key].findData(value)
+                    controls[key].setCurrentIndex(index)
+                    controls[key].activated.emit(index)
+                game = data / "game.exe"
+                game.touch()
+                window.game.setText(str(game))
+                with patch.object(window, "_begin_job") as begin:
+                    window._start((window.selected,), "launch")
+                picked = begin.call_args.args[0].choices
+                self.assertEqual((picked["console"], picked["dlss"], picked["rt"], picked["speed"]),
+                                 ("series-s", "performance", "on", "fast"))
+                window.choices_toggle.click()
+                self.assertTrue(window.choices_box.isHidden())
+                self.assertEqual(window.choices_summary.text(), "3 changed")
+                self.assertIn("DLSS: Performance", window.choices_summary.toolTip())
+            finally:
+                window.close()
+            # Saved for next time.
+            window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
+            try:
+                window.rows["nvidia_rt"].click()
+                self.assertEqual(window.choice_controls["dlss"].currentData(), "performance")
+                self.assertTrue(window.choices_box.isHidden())  # Folded state is remembered too
             finally:
                 window.close()
 
@@ -271,7 +322,7 @@ class DesktopTests(unittest.TestCase):
             window = MainWindow(data, scan_runtime=False, check_updates_on_startup=False)
             try:
                 self.assertEqual([project.key for project in window.project_list.projects()],
-                                 ["victory", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "cool_fox", "scarlett_3070"])
+                                 ["victory", "xcl", "tuxbox", "hyphennn", "dexnom", "cool_fox", "scarlett_3070", "nvidia_rt"])
                 window.project_list.move_row(window.rows["cool_fox"], 0)
                 window.project_list.move_row(window.rows["victory"], len(window.rows))
                 self.assertEqual(window.selected.key, "xcl")
@@ -281,7 +332,7 @@ class DesktopTests(unittest.TestCase):
             try:
                 projects = window.project_list.projects()
                 self.assertEqual([project.key for project in projects],
-                                 ["cool_fox", "xcl", "tuxbox", "hyphennn", "dexnom", "avatarmanz", "scarlett_3070", "victory"])
+                                 ["cool_fox", "xcl", "tuxbox", "hyphennn", "dexnom", "scarlett_3070", "nvidia_rt", "victory"])
                 with patch.object(window, "_start") as start:
                     window.update_all.click()
                     start.assert_called_once_with(projects, "update")

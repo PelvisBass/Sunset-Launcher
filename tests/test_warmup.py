@@ -130,6 +130,7 @@ class PageTests(unittest.TestCase):
             TemporaryDirectory() as directory,
             patch.object(Library, "revision", lambda library, item: installed.get(item.key)),
             patch.object(Library, "build", build),
+            patch.object(Library, "fetch_layer_files") as fetch,
         ):
             window = self.window(directory)
             self.assertFalse(window.empty_library.isHidden())
@@ -149,6 +150,8 @@ class PageTests(unittest.TestCase):
             self.assertTrue(all(row.isHidden() for key, row in window.rows.items() if key != project.key))
             self.assertTrue(window.empty_library.isHidden())
             self.assertEqual(window.selected, project)
+            # Victory needs no DLSS files, so nothing was asked and only its own files are fetched.
+            self.assertEqual(fetch.call_args.kwargs, {"dlss": False})
             self.assertIn("installed", window.summary.text())
             self.assertEqual(window.nav.button(LIBRARY_PAGE).badge.text(), "1")
             self.assertEqual(window.nav.button(INSTALL_PAGE).badge.text(), str(len(available) - 1))
@@ -181,6 +184,12 @@ class PageTests(unittest.TestCase):
             self.assertIn("Not warmed up", window.warm_stage.text())
             self.assertTrue(window._needs_warmup(project, str(game)))
             window.warm_jobs.setCurrentIndex(window.warm_jobs.findData(4))
+            self.assertTrue(window.warm_pipelines.isChecked())
+            with patch.object(window, "_begin_job") as begin:
+                window._start((project,), "warm")
+                self.assertTrue(begin.call_args.args[0].warm_pipelines)
+                window._start((project,), "launch")
+                self.assertFalse(begin.call_args.args[0].warm_pipelines)  # Never before a launch
             window.warm_button.click()
             self.wait_for(lambda: window.thread is None and calls)
             self.app.processEvents()

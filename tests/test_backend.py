@@ -50,7 +50,7 @@ class RecipeTests(unittest.TestCase):
             self.assertEqual(
                 {project.key: recipe_for(project) and recipe_for(project).runtime for project in PROJECTS},
                 {"xcl": "native", "victory": "native", "tuxbox": None, "hyphennn": "native",
-                 "dexnom": "native", "avatarmanz": "native", "cool_fox": "native", "scarlett_3070": "native"},
+                 "dexnom": "native", "cool_fox": "native", "scarlett_3070": "native", "nvidia_rt": "native"},
             )
         with patch.object(sys, "platform", "darwin"):
             self.assertTrue(all(recipe_for(project) is None for project in PROJECTS))
@@ -94,6 +94,10 @@ class RecipeTests(unittest.TestCase):
                 WarmupProgress(812, 4120, "containers", "pack.bin"),
             "/games/title/pipelines.pak: 5 of 90 pipelines (5%), 3 s": WarmupProgress(5, 90, "pipelines", "pipelines.pak"),
             "4000 shaders in the cache, 52 s": WarmupProgress(4000, None, "shaders"),
+            "88629 pipelines known, 20 made before (56280b89f0ca09bd), 0 bad; 88609 to make, 8 processes":
+                WarmupProgress(0, 88609, "pipelines", "pipelines"),
+            "40 of 88609, 12 s": WarmupProgress(40, 88609, "pipelines", "pipelines"),
+            "20 made in 5 s (0 have no host pipeline, 0 ended their process); ms each: median 23.3": None,
             "cache        /games/cache (512 MB)": None,
             "containers   10 in 1.0 s: 10 already cached, 0 translated, 0 refused": None,
         }
@@ -107,8 +111,8 @@ class RecipeTests(unittest.TestCase):
             for project in PROJECTS if any(recipe.warmup for recipe in project.recipes.values())
         }
         self.assertEqual(kinds, {
-            "xcl": {"total"}, "victory": {"file"}, "tuxbox": {"none"}, "avatarmanz": {"count"}, "cool_fox": {"count"},
-            "scarlett_3070": {"count"},
+            "xcl": {"total"}, "victory": {"file"}, "tuxbox": {"none"}, "cool_fox": {"count"},
+            "scarlett_3070": {"count"}, "nvidia_rt": {"count"},
         })
         values = {"artifact": "layer.exe", "game": "Game.exe", "game_dir": "Games", "venv_python": "python"}
         self.assertEqual(expand_command(recipe_for_host("xcl", "linux").warmup, values),
@@ -129,7 +133,8 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual(modes["xcl"], {("auto", "series-x", "series-s")})
         self.assertEqual(modes["scarlett_3070"], {("series-s", "series-x")})
         self.assertEqual(modes["tuxbox"], {()})
-        for key in ("victory", "hyphennn", "dexnom", "avatarmanz", "cool_fox"):
+        self.assertEqual(modes["nvidia_rt"], {()})  # The in-game F1 menu picks the console
+        for key in ("victory", "hyphennn", "dexnom", "cool_fox"):
             self.assertEqual(modes[key], {("series-x", "series-s")}, key)
         xcl = recipe_for_host("xcl", "windows")
         self.assertEqual((xcl.console_env, dict(xcl.console_env_values)),
@@ -143,9 +148,9 @@ class RecipeTests(unittest.TestCase):
             "victory": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "hyphennn": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "dexnom": ["layer.exe", "run", "Game.exe", "--execute", "--console", "series-s", "--unimplemented", "trap", "--flag", "value"],
-            "avatarmanz": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "cool_fox": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
             "scarlett_3070": ["layer.exe", "run", "Game.exe", "--console", "series-s", "--execute", "--flag", "value"],
+            "nvidia_rt": ["layer.exe", "play", "Game.exe", "--flag", "value"],
             "tuxbox": ["python", "tuxbox.py", "run", "--flag", "value", "Game.exe"],
         }
         for project in PROJECTS:
@@ -357,6 +362,93 @@ class LibraryTests(unittest.TestCase):
             with self.assertRaisesRegex(OperationError, "Choose the console mode in the selector"):
                 self.library.launch(project, str(self.game), None, runner, options="--console=series-x")
             self.assertEqual(run.call_count, 2)
+
+    def test_play_settings_go_in_as_set_arguments_and_warm_up_keeps_them_in_the_environment(self):
+        project = next(project for project in PROJECTS if project.key == "nvidia_rt")
+        runner = Runner(self.output.append)
+        options = "VICTORY_RT_NATIVE=1 VICTORY_PIPELINE_SLOW_WORKERS=4 DXVK_HUD=fps --series-s"
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch.object(self.library, "revision", return_value="fixture"),
+            patch.object(runner, "run") as run,
+        ):
+            self.library.launch(project, str(self.game), None, runner, options=options)
+            command, env = run.call_args.args[0], run.call_args.kwargs["env"]
+            self.assertEqual(command[1:3], ["play", str(self.game)])
+            settings = [command[index + 1] for index, part in enumerate(command) if part == "--set"]
+            self.assertEqual(settings[0], "VICTORY_PIPELINE_SAMPLER_TABLE=1")
+            # The user's entries come last, so `play` keeps them over the preset's.
+            self.assertEqual(settings[-2:], ["VICTORY_RT_NATIVE=1", "VICTORY_PIPELINE_SLOW_WORKERS=4"])
+            self.assertIn("VICTORY_PIPELINE_SLOW_WORKERS=8", settings)
+            self.assertEqual(command[-1], "--series-s")
+            self.assertEqual(env["DXVK_HUD"], "fps")
+            self.assertNotIn("VICTORY_RT_NATIVE", env)
+            self.assertNotIn("VICTORY_PIPELINE_SAMPLER_TABLE", env)
+            self.assertTrue(env["VICTORY_CACHE_DIR"])
+            self.assertIn("Launch settings: VICTORY_RT_NATIVE=1", "".join(self.output))
+
+            self.library.warm_up(project, str(self.game), None, runner, options=options, jobs=2)
+            command, env = run.call_args.args[0], run.call_args.kwargs["env"]
+            self.assertEqual(command[1:], ["shaders", str(self.game.parent), "--jobs", "2"])
+            self.assertEqual((env["VICTORY_PIPELINE_SAMPLER_TABLE"], env["VICTORY_RT_NATIVE"]), ("1", "1"))
+        self.assertEqual(dict(project.recipes["linux"].launch_env)["VICTORY_WARMUP_RESTART"], "0")
+        self.assertNotIn("VICTORY_WARMUP_RESTART", dict(project.recipes["windows"].launch_env))
+
+    def test_game_settings_become_play_arguments_and_replace_the_menus_saves(self):
+        project = next(project for project in PROJECTS if project.key == "nvidia_rt")
+        runner = Runner(self.output.append)
+        local = self.root / "LocalAppData"
+        menu = local / "victory" / "victory-settings.txt"
+        menu.parent.mkdir(parents=True)
+        menu.write_text("VICTORY_MENU_DLSS=dlaa\r\nVICTORY_MENU_FG_TYPE=fsr\r\nVICTORY_MENU_CONSOLE=series-x\r\n"
+                        "VICTORY_BVH_BUILDER=1\r\n", encoding="utf-8")
+        choices = {"console": "series-s", "dlss": "performance", "framegen": "none", "speed": "plain", "rt": "on",
+                   "fps": "not-a-cap"}
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch.dict(os.environ, {"LOCALAPPDATA": str(local)}),
+            patch.object(self.library, "revision", return_value="fixture"),
+            patch.object(runner, "run") as run,
+        ):
+            self.library.launch(project, str(self.game), None, runner, choices=choices)
+            command = run.call_args.args[0]
+            settings = [command[index + 1] for index, part in enumerate(command) if part == "--set"]
+            for expected in (["--series-s"], ["--res", "1440"], ["--dlss", "performance"], ["--fps", "1000"],
+                             ["--no-framegen-ready"]):
+                self.assertTrue(any(command[i:i + len(expected)] == expected for i in range(len(command))), expected)
+            self.assertIn("VICTORY_RT_NATIVE=1", settings)
+            self.assertIn("VICTORY_FULLSCREEN=1", settings)
+            self.assertNotIn("VICTORY_PIPELINE_SLOW_WORKERS=8", settings)  # Plain leaves PLAY.cmd's fast settings out
+            # The menu's saves for these settings go; its others, such as the frame generation type, stay.
+            self.assertEqual(menu.read_bytes(), b"VICTORY_MENU_FG_TYPE=fsr\r\n")
+            # Including the menu's older ray tracing, so the launcher's choice of the native one decides.
+            self.assertIn("replace 3 saved by the in-game menu", "".join(self.output))
+
+            self.library.warm_up(project, str(self.game), None, runner, choices={"rt": "on"})
+            command, env = run.call_args.args[0], run.call_args.kwargs["env"]
+            self.assertNotIn("--res", command)
+            self.assertEqual((env["VICTORY_RT_NATIVE"], env["VICTORY_PIPELINE_SLOW_WORKERS"]), ("1", "8"))
+
+    def test_pipelines_are_made_only_when_asked(self):
+        project = next(project for project in PROJECTS if project.key == "nvidia_rt")
+        runner = Runner(self.output.append)
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch.object(self.library, "revision", return_value="fixture"),
+            patch.object(runner, "run") as run,
+        ):
+            self.library.warm_up(project, str(self.game), None, runner, jobs=4)
+            self.assertEqual([call.args[0][1] for call in run.call_args_list], ["shaders"])
+            run.reset_mock()
+            self.library.warm_up(project, str(self.game), None, runner, jobs=4, pipelines=True)
+            commands = [call.args[0] for call in run.call_args_list]
+        self.assertEqual([command[1] for command in commands], ["shaders", "warm"])
+        self.assertEqual(commands[1][2:], ["--jobs", "4"])
+        # The same settings, so warm makes the pipelines the runs will look for.
+        first, second = (call.kwargs["env"] for call in run.call_args_list)
+        self.assertEqual(first["VICTORY_PIPELINE_SLOW_WORKERS"], second["VICTORY_PIPELINE_SLOW_WORKERS"])
+        kinds = {project.key: bool(project.recipes[next(iter(project.recipes))].warmup_pipelines) for project in PROJECTS}
+        self.assertEqual([key for key, has in kinds.items() if has], ["cool_fox", "scarlett_3070", "nvidia_rt"])
 
     def test_warm_up_runs_with_the_launch_environment_and_worker_count(self):
         revision = self.build()
