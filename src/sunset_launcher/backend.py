@@ -24,6 +24,7 @@ from . import downloads
 from .catalog import Project, Recipe
 from .proton import ProtonInstall, prepared_wine_launch, proton_game_path, proton_launch
 from .shader_cache import cache_files, configure_gpu_cache, configure_shader_cache, remove_cache_file
+from .sysinfo import process_tree, suspend_processes
 from .winsetup import detect as detect_build_tools
 from .winsetup import missing as missing_build_tools
 from .winsetup import with_tool_folders
@@ -220,6 +221,7 @@ class Runner:
         self._lock = Lock()
         self._process: subprocess.Popen | None = None
         self._kill_timer: Timer | None = None
+        self.paused = False
 
     @property
     def pid(self) -> int | None:
@@ -235,7 +237,35 @@ class Runner:
         self.stopped.set()
         with self._lock:
             if self._process is not None:
+                if self.paused:
+                    # A paused process would hold a stop request until it ran again.
+                    self._suspend(self._process, False)
                 self._stop(self._process)
+
+    def pause(self) -> bool:
+        """Freeze the running command and everything it started. Returns whether there was one to pause."""
+        with self._lock:
+            if self._process is None or self.paused or self.stopped.is_set():
+                return False
+            self._suspend(self._process, True)
+            return True
+
+    def resume(self) -> bool:
+        with self._lock:
+            if self._process is None or not self.paused:
+                return False
+            self._suspend(self._process, False)
+            return True
+
+    def _suspend(self, process: subprocess.Popen, suspend: bool) -> None:
+        if suspend:
+            # Twice: a process started while the first pass ran is caught by the second.
+            for _ in range(2):
+                suspend_processes(process_tree(process.pid), True)
+        else:
+            # Children first, so a parent that wakes finds its children running.
+            suspend_processes(list(reversed(process_tree(process.pid))), False)
+        self.paused = suspend
 
     def _stop(self, process: subprocess.Popen) -> None:
         if self._kill_timer is not None:
@@ -324,6 +354,7 @@ class Runner:
         finally:
             with self._lock:
                 self._process = None
+                self.paused = False
                 if timeout_timer is not None:
                     timeout_timer.cancel()
                 if self._kill_timer is not None:

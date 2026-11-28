@@ -11,7 +11,7 @@ from contextlib import nullcontext
 from os.path import expanduser, isdir, isfile
 from pathlib import Path
 
-from PySide6.QtCore import QDateTime, QLocale, QMimeData, QPoint, QRectF, QSettings, QThread, QTimer, Qt, QUrl, QObject, Signal, Slot
+from PySide6.QtCore import QDateTime, QLocale, QMimeData, QPoint, QRectF, QSettings, QSize, QThread, QTimer, Qt, QUrl, QObject, Signal, Slot
 from PySide6.QtGui import QColor, QCloseEvent, QDesktopServices, QDrag, QIcon, QLinearGradient, QPainter, QPainterPath, QPixmap, QShowEvent, QTextCursor
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
@@ -747,7 +747,12 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Sunset Launcher")
         self.setWindowIcon(QIcon(sun_logo()))
         self.setMinimumSize(870, 620)
-        self.resize(1130, 790)
+        # A little roomier than the panels need, kept within a smaller screen.
+        size = QSize(1240, 860)
+        if (screen := QApplication.primaryScreen()) is not None:
+            room = screen.availableGeometry().size() * 0.92
+            size = size.boundedTo(room)
+        self.resize(size.expandedTo(self.minimumSize()))
 
         content = QWidget()
         self.setCentralWidget(content)
@@ -1130,8 +1135,8 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(label("Shader warm-up", "sectionTitle"))
         layout.addWidget(label(
-            "Compile a game's shaders before you play, so it stutters less while they build. Each layer runs its "
-            "own warm-up with the same Proton prefix, shader cache and settings as Launch.",
+            "Prepare a game's shaders, and for some layers its GPU pipelines, before you play, so it stutters less. "
+            "Each layer runs its own warm-up with the same Proton prefix, caches and settings as Launch.",
             "muted", wrap=True,
         ))
         layout.addSpacing(4)
@@ -1175,10 +1180,18 @@ class MainWindow(QMainWindow):
         self.warm_button = button("Warm up", primary=True)
         self.warm_button.setMinimumWidth(92)
         self.warm_button.clicked.connect(self._warm_button_clicked)
+        # Stops for good. Pausing keeps the work's processes and memory; either way a later warm-up
+        # continues from what was done.
+        self.warm_cancel = button("Cancel", quiet=True)
+        self.warm_cancel.setProperty("danger", True)
+        self.warm_cancel.setToolTip("Stop the warm-up. What it already did is kept, and the next one continues from there.")
+        self.warm_cancel.clicked.connect(self._stop)
+        self.warm_cancel.hide()
         top.addWidget(self.warm_title)
         top.addWidget(self.warm_subject, 1, Qt.AlignmentFlag.AlignBottom)
         top.addWidget(self.warm_percent)
         top.addSpacing(8)
+        top.addWidget(self.warm_cancel)
         top.addWidget(self.warm_button)
         progress.addLayout(top)
         self.warm_bar = QProgressBar()
@@ -1232,10 +1245,11 @@ class MainWindow(QMainWindow):
         self.warm_pipelines.toggled.connect(lambda on: self.settings.setValue("warmup/pipelines", on))
         options.addWidget(self.warm_pipelines, 3, 0, 1, 2)
         self.warm_pipelines_note = label(
-            "What you wait for in game is the GPU making pipelines, not the shader translation. This makes every "
-            "pipeline your earlier sessions recorded, so the game finds them ready. The first time can take half an "
-            "hour; later ones only add new pipelines, until an update changes them all. Cool Fox, Scarlett 3070 and "
-            "VIctory-NVIDIA-RT. A warm-up before a launch skips this.", "muted", wrap=True,
+            "The waits in game are the GPU making pipelines, not the shader translation. This makes every pipeline "
+            "your earlier sessions recorded, so the game finds them ready. It takes longer than the shaders alone, "
+            "most of all the first time and after a layer update; other times it only adds new ones. You can pause "
+            "or cancel it, and the next warm-up continues where it stopped. For Cool Fox, Scarlett 3070 and "
+            "VIctory-NVIDIA-RT; the warm-up before a launch skips it.", "muted", wrap=True,
         )
         options.addWidget(self.warm_pipelines_note, 4, 0, 1, 2)
         options.addWidget(rule(), 5, 0, 1, 2)
@@ -1555,8 +1569,8 @@ class MainWindow(QMainWindow):
             return False
         box.setInformativeText(
             f"Sunset Launcher will install these with winget:\n{names}\n\n"
-            "Installing accepts each package's license terms. Windows asks for administrator permission, and the "
-            "C++ Build Tools can take 10 to 30 minutes. Progress shows in Activity."
+            "Installing accepts each package's license terms. Windows asks for administrator permission. The C++ "
+            "Build Tools are the largest and take a while. Progress shows in Activity."
         )
         install = box.addButton("Install", QMessageBox.ButtonRole.AcceptRole)
         box.addButton(QMessageBox.StandardButton.Cancel)
@@ -1580,13 +1594,27 @@ class MainWindow(QMainWindow):
 
     def _warm_button_clicked(self):
         if self.warm_key is not None:
-            self._stop()
+            self._toggle_warm_pause()
             return
         project = self.warm_layer.currentData()
         if project is not None:
             if project != self.selected:
                 self._select(project)
             self._start((project,), "warm")
+
+    def _toggle_warm_pause(self):
+        """Freeze or continue the warm-up's processes, the Proton container and Wine included."""
+        if self.worker is None:
+            return
+        runner = self.worker.runner
+        if self.warm_tracker.paused:
+            if runner.resume():
+                self.warm_tracker.resume()
+                self._set_summary("Warm-up resumed")
+        elif runner.pause():
+            self.warm_tracker.pause()
+            self._set_summary("Warm-up paused")
+        self._update_warm_card()
 
     def _update_memory(self):
         if self.pages.currentIndex() != WARMUP_PAGE and self.warm_key is None:
@@ -1621,7 +1649,10 @@ class MainWindow(QMainWindow):
         self.warm_captions["left"].setText("Time left (file)" if kind == "file" else "Time left")
         self.warm_subject.setText(project.name if project is not None else "")
         self.warm_pipelines.setEnabled(recipe is not None and bool(recipe.warmup_pipelines))
-        if active:
+        paused = active and tracker.paused
+        if paused:
+            self.warm_title.setText("Paused")
+        elif active:
             self.warm_title.setText(
                 "Making GPU pipelines" if progress is not None and progress.unit == "pipelines" else "Warming up shaders"
             )
@@ -1645,12 +1676,15 @@ class MainWindow(QMainWindow):
             self.warm_stats["done"].setText(done)
             speed = tracker.speed
             self.warm_stats["speed"].setText(f"{speed:,.0f} {unit}/s" if speed is not None else "—")
-            self.warm_stats["left"].setText(format_duration(tracker.seconds_left) if active else "—")
+            self.warm_stats["left"].setText(format_duration(tracker.seconds_left) if active and not paused else "—")
         else:
             for key in ("done", "speed", "left"):
                 self.warm_stats[key].setText("—")
         if active:
-            stage = (progress.stage, progress.unit) if progress is not None else ("Starting",)
+            # One word where the stage and its unit are the same, as with pipelines.
+            stage = tuple(dict.fromkeys((progress.stage, progress.unit))) if progress is not None else ("Starting",)
+            if paused:
+                stage = ("Paused: Resume continues it, Cancel stops it", *stage)
             self.warm_stage.setText(" · ".join(filter(None, (*stage, f"{format_duration(tracker.elapsed)} elapsed"))))
         elif project is not None:
             revision, warmed_game, when = self._last_warmup(project)
@@ -1662,7 +1696,13 @@ class MainWindow(QMainWindow):
                 self.warm_stage.setText("Not warmed up for this game yet.")
         else:
             self.warm_stage.setText("")
-        self.warm_button.setText("Cancel" if active else "Warm up")
+        self.warm_button.setText(("Resume" if paused else "Pause") if active else "Warm up")
+        self.warm_button.setToolTip(
+            "Continue the warm-up." if paused else
+            "Freeze the warm-up where it is. Its processes keep their memory until you resume or cancel."
+            if active else self.warm_button.toolTip()
+        )
+        self.warm_cancel.setVisible(active)
         self.warm_button.setObjectName("" if active else "primary")
         self.warm_button.style().unpolish(self.warm_button)
         self.warm_button.style().polish(self.warm_button)
@@ -1712,12 +1752,12 @@ class MainWindow(QMainWindow):
                 and (layer_recipe.runtime != "proton" or self._chosen_proton() is not None)
             )
             self.warm_button.setEnabled(self.warm_key is not None or bool(warm_ready))
-            self.warm_button.setToolTip(
-                "Stop the warm-up." if self.warm_key is not None
-                else "Choose a shared game path first." if not has_game
+            if self.warm_key is None:  # During a warm-up the card sets Pause or Resume's tip.
+                self.warm_button.setToolTip(
+                "Choose a shared game path first." if not has_game
                 else "Select a Proton version for this layer in Library." if layer_recipe and layer_recipe.runtime == "proton" and self._chosen_proton() is None
-                else "Compile this layer's shaders for the shared game."
-            )
+                else "Translate this layer's shaders for the shared game, and make its GPU pipelines if ticked below."
+                )
         self.clear_shaders.setEnabled(can_start_job and cache_supported and bool(cache_size))
         self.proton.setEnabled(self.proton.count() > 1)
         can_launch = can_start_job and recipe is not None and ready and has_game and (recipe.runtime != "proton" or proton is not None)
@@ -2051,7 +2091,7 @@ class MainWindow(QMainWindow):
             warm_first=action == "launch" and self.warm_before_launch.isChecked() and self._needs_warmup(projects[0], game),
             install_tools=install_tools, dlss=dlss,
             choices=self._layer_choices(projects[0]) if uses_layer else None,
-            # Only a warm-up started here makes pipelines: a launch should not wait half an hour first.
+            # Only a warm-up started here makes pipelines: a launch should not wait for all of them first.
             warm_pipelines=action == "warm" and self.warm_pipelines.isChecked(),
         )
         if self.thread is not None:
@@ -2197,6 +2237,8 @@ class MainWindow(QMainWindow):
         return next(project for project in PROJECTS if project.key == key)
 
     def _stop(self):
+        if self.warm_tracker.paused:
+            self.warm_tracker.resume()
         if self.worker is not None:
             self.stop.setEnabled(False)
             self._set_summary("Stopping…")

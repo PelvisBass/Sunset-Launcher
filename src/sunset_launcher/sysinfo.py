@@ -42,15 +42,7 @@ def available_memory() -> int | None:
     return None
 
 
-def process_tree_memory(root: int, proc: Path = Path("/proc")) -> int | None:
-    """Resident bytes of a Linux process and all its descendants, or None where unsupported.
-
-    A Proton warm-up runs umu, then the Steam Linux Runtime container, then Wine and the layer.
-    The container starts its own session, so the whole tree is followed rather than one process group.
-    """
-    if not sys.platform.startswith("linux") or not proc.is_dir():
-        return None
-    page = os.sysconf("SC_PAGE_SIZE")
+def _linux_children(proc: Path) -> dict[int, list[int]]:
     children: dict[int, list[int]] = {}
     for entry in proc.iterdir():
         if not entry.name.isdigit():
@@ -62,19 +54,108 @@ def process_tree_memory(root: int, proc: Path = Path("/proc")) -> int | None:
         except (OSError, ValueError, IndexError):
             continue
         children.setdefault(parent, []).append(int(entry.name))
-    total = 0
-    found = False
+    return children
+
+
+def _windows_children() -> dict[int, list[int]]:
+    import ctypes
+    from ctypes import wintypes
+
+    windll = getattr(ctypes, "windll", None)
+    if windll is None:
+        return {}
+
+    class Entry(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_size_t), ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD), ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", ctypes.c_long), ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel32 = windll.kernel32
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    snapshot = kernel32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if not snapshot or snapshot == wintypes.HANDLE(-1).value:
+        return {}
+    children: dict[int, list[int]] = {}
+    try:
+        entry = Entry()
+        entry.dwSize = ctypes.sizeof(Entry)
+        more = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+        while more:
+            children.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+            more = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+    finally:
+        kernel32.CloseHandle(snapshot)
+    return children
+
+
+def process_tree(root: int, proc: Path = Path("/proc")) -> list[int]:
+    """A process and all its descendants, the root first.
+
+    A Proton run is umu, then the Steam Linux Runtime container in a session of its own, then Wine and the
+    layer, so the tree is followed by parent rather than by process group."""
+    if sys.platform.startswith("linux"):
+        children = _linux_children(proc) if proc.is_dir() else {}
+    elif sys.platform == "win32":
+        children = _windows_children()
+    else:
+        children = {}
+    tree: list[int] = []
     pending = [root]
     seen: set[int] = set()
     while pending:
-        pid = pending.pop()
+        pid = pending.pop(0)
         if pid in seen:
             continue
         seen.add(pid)
+        tree.append(pid)
+        pending.extend(child for child in children.get(pid, ()) if child != pid)
+    return tree
+
+
+def suspend_processes(pids: list[int], suspend: bool) -> int:
+    """Pause or continue processes. Returns how many it reached."""
+    reached = 0
+    if sys.platform == "win32":
+        import ctypes
+
+        windll = getattr(ctypes, "windll", None)
+        if windll is None:
+            return 0
+        call = windll.ntdll.NtSuspendProcess if suspend else windll.ntdll.NtResumeProcess
+        windll.kernel32.OpenProcess.restype = ctypes.c_void_p
+        for pid in pids:
+            handle = windll.kernel32.OpenProcess(0x0800, False, pid)  # PROCESS_SUSPEND_RESUME
+            if handle:
+                try:
+                    reached += call(ctypes.c_void_p(handle)) == 0
+                finally:
+                    windll.kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return reached
+    import signal
+
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGSTOP if suspend else signal.SIGCONT)
+            reached += 1
+        except (ProcessLookupError, PermissionError):
+            pass
+    return reached
+
+
+def process_tree_memory(root: int, proc: Path = Path("/proc")) -> int | None:
+    """Resident bytes of a Linux process and all its descendants, or None where unsupported."""
+    if not sys.platform.startswith("linux") or not proc.is_dir():
+        return None
+    page = os.sysconf("SC_PAGE_SIZE")
+    total = 0
+    found = False
+    for pid in process_tree(root, proc):
         try:
             total += int((proc / str(pid) / "statm").read_text(encoding="ascii").split()[1]) * page
             found = True
         except (OSError, ValueError, IndexError):
             pass
-        pending.extend(children.get(pid, ()))
     return total if found else None

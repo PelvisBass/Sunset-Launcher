@@ -19,8 +19,20 @@ class WarmupTracker:
 
     def reset(self) -> None:
         self.started = self.clock()
+        self.paused_at: float | None = None
         self.progress: WarmupProgress | None = None
         self._samples: deque[tuple[float, int]] = deque()
+
+    def pause(self) -> None:
+        if self.paused_at is None:
+            self.paused_at = self.clock()
+
+    def resume(self) -> None:
+        """Leave the pause out of the elapsed time, and measure speed again from here."""
+        if self.paused_at is not None:
+            self.started += self.clock() - self.paused_at
+            self.paused_at = None
+        self._samples.clear()
 
     def update(self, progress: WarmupProgress) -> None:
         previous = self.progress
@@ -59,7 +71,11 @@ class WarmupTracker:
 
     @property
     def elapsed(self) -> float:
-        return self.clock() - self.started
+        return (self.paused_at if self.paused_at is not None else self.clock()) - self.started
+
+    @property
+    def paused(self) -> bool:
+        return self.paused_at is not None
 
 
 def format_duration(seconds: float | None) -> str:

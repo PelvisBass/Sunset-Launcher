@@ -67,7 +67,7 @@ class Recipe:
     # What the upstream command reports: an overall total, a total per game file, a running count, or nothing.
     warmup_progress: Literal["total", "file", "count", "none"] = "none"
     # A second warm-up command: the GPU pipelines earlier runs recorded, made ahead so a run does not stop for
-    # them. It can take long, so only a warm-up the user starts runs it, not one before a launch.
+    # them. It takes much longer than the shaders, so only a warm-up the user starts runs it, not one before a launch.
     warmup_pipelines: tuple[str, ...] = ()
     # A launch command that replaces the VICTORY_* environment with its own takes its settings as arguments:
     # launch_env and Launch options' VICTORY_* entries are passed as `<settings_arg> NAME=VALUE` before {options}.
@@ -498,7 +498,7 @@ NVIDIA_RT_CHOICES = (
         Option("off", "Off"),
         Option("on", "On (experimental)", settings=(("VICTORY_RT_NATIVE", "1"),)),
     ), tip="This fork's native ray tracing: the game's own, on the RTX cores (VICTORY_RT_NATIVE). Experimental, and "
-           "about 5 to 8 fps for now. The older path, the F1 menu's \"RAY TRACING (SLOW, BROKEN)\", is turned off."),
+           "much slower for now. The older path, the F1 menu's \"RAY TRACING (SLOW, BROKEN)\", is turned off."),
 )
 # What the F1 menu saves for these settings; PLAY.cmd takes the same out before each start. The menu's older
 # "RAY TRACING (SLOW, BROKEN)", VICTORY_BVH_BUILDER, goes too: the Ray tracing choice is the fork's native path,

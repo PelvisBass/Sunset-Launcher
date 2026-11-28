@@ -60,6 +60,25 @@ class TrackerTests(unittest.TestCase):
         self.assertIsNone(tracker.fraction)
         self.assertIsNone(tracker.seconds_left)
 
+    def test_a_pause_is_left_out_of_the_elapsed_time_and_speed(self):
+        clock = Clock()
+        tracker = WarmupTracker(clock)
+        tracker.update(WarmupProgress(0, 1000, "pipelines"))
+        clock.now += 10
+        tracker.update(WarmupProgress(100, 1000, "pipelines"))
+        tracker.pause()
+        clock.now += 300
+        self.assertTrue(tracker.paused)
+        self.assertEqual(tracker.elapsed, 10)
+        tracker.resume()
+        self.assertFalse(tracker.paused)
+        self.assertIsNone(tracker.speed)  # Measured again after a pause
+        clock.now += 5
+        tracker.update(WarmupProgress(150, 1000, "pipelines"))
+        clock.now += 5
+        tracker.update(WarmupProgress(200, 1000, "pipelines"))
+        self.assertEqual((tracker.elapsed, tracker.speed), (20, 10))
+
     def test_formatting(self):
         self.assertEqual([format_duration(value) for value in (None, 9, 69, 3725)], ["—", "9s", "1m 09s", "1h 02m"])
         self.assertEqual(format_bytes(None), "—")
@@ -84,6 +103,73 @@ class MemoryTests(unittest.TestCase):
             self.assertEqual(process_tree_memory(41, proc), 1020 * page)
             self.assertEqual(process_tree_memory(43, proc), 900 * page)
             self.assertIsNone(process_tree_memory(12, proc))
+
+
+class PauseTests(unittest.TestCase):
+    """A real process and the child it starts are frozen, continued and stopped together."""
+
+    def test_pause_resume_and_cancel_reach_the_whole_tree(self):
+        import subprocess
+        import threading
+        import time
+
+        from sunset_launcher.backend import Cancelled, Runner
+        from sunset_launcher.sysinfo import process_tree
+
+        with TemporaryDirectory() as directory:
+            ticks = Path(directory) / "ticks"
+            child = (
+                "import sys, time\n"
+                "with open(sys.argv[1], 'a') as f:\n"
+                "    while True:\n"
+                "        f.write('x'); f.flush(); time.sleep(0.02)\n"
+            )
+            parent = (
+                "import subprocess, sys\n"
+                f"subprocess.Popen([sys.executable, '-c', {child!r}, sys.argv[1]]).wait()\n"
+            )
+            runner = Runner(lambda text: None)
+            ended: list[BaseException] = []
+
+            def work():
+                try:
+                    runner.run((sys.executable, "-c", parent, str(ticks)), Path(directory))
+                except BaseException as error:
+                    ended.append(error)
+
+            thread = threading.Thread(target=work)
+            thread.start()
+
+            def size():
+                return ticks.stat().st_size if ticks.exists() else 0
+
+            deadline = time.monotonic() + 15
+            while size() < 5 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertGreaterEqual(size(), 5, "the child never started")
+            self.assertGreaterEqual(len(process_tree(runner.pid)), 2)
+
+            self.assertTrue(runner.pause())
+            time.sleep(0.3)
+            frozen = size()
+            time.sleep(0.5)
+            self.assertEqual(size(), frozen, "the child kept running while paused")
+            self.assertFalse(runner.pause())  # Already paused
+
+            self.assertTrue(runner.resume())
+            time.sleep(0.5)
+            self.assertGreater(size(), frozen)
+
+            # A stop while paused wakes the tree first, so it ends.
+            self.assertTrue(runner.pause())
+            runner.cancel()
+            thread.join(timeout=15)
+            self.assertFalse(thread.is_alive())
+            self.assertIsInstance(ended[0], Cancelled)
+            time.sleep(0.5)
+            stopped = size()
+            time.sleep(0.5)
+            self.assertEqual(size(), stopped, "the child outlived the stop")
 
 
 class PageTests(unittest.TestCase):
@@ -200,6 +286,36 @@ class PageTests(unittest.TestCase):
             self.assertEqual(window.warm_button.text(), "Warm up")
             self.assertFalse(window._needs_warmup(project, str(game)))
             self.assertIn("Warmed up for this game", window.warm_stage.text())
+
+    def test_the_warm_up_card_pauses_resumes_and_cancels(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        with TemporaryDirectory() as directory:
+            window = self.window(directory)
+            runner = Mock(pause=Mock(return_value=True), resume=Mock(return_value=True))
+            window.worker = SimpleNamespace(runner=runner)
+            window.warm_key = "xcl"
+            window.warm_tracker.reset()
+            window._refresh_actions()  # As a job's start does
+            window._update_warm_card()
+            self.assertEqual(window.warm_button.text(), "Pause")
+            self.assertFalse(window.warm_cancel.isHidden())
+            window.warm_button.click()
+            runner.pause.assert_called_once()
+            self.assertEqual((window.warm_title.text(), window.warm_button.text()), ("Paused", "Resume"))
+            window.warm_button.click()
+            runner.resume.assert_called_once()
+            self.assertEqual(window.warm_button.text(), "Pause")
+            window.warm_button.click()
+            window.warm_cancel.click()
+            runner.cancel.assert_called_once()
+            self.assertFalse(window.warm_tracker.paused)
+            window.worker = None
+            window.warm_key = None
+            window._update_warm_card()
+            self.assertTrue(window.warm_cancel.isHidden())
+            self.assertEqual(window.warm_button.text(), "Warm up")
 
     def test_a_failed_warm_up_leaves_the_build_status_alone(self):
         project = next(item for item in PROJECTS if item.key == "xcl")
