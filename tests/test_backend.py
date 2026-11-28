@@ -400,8 +400,9 @@ class LibraryTests(unittest.TestCase):
         local = self.root / "LocalAppData"
         menu = local / "victory" / "victory-settings.txt"
         menu.parent.mkdir(parents=True)
-        menu.write_text("VICTORY_MENU_DLSS=dlaa\r\nVICTORY_MENU_FG_TYPE=fsr\r\nVICTORY_MENU_CONSOLE=series-x\r\n"
-                        "VICTORY_BVH_BUILDER=1\r\n", encoding="utf-8")
+        # Bytes, as the game's menu writes them: text mode would turn \n into \r\n on Windows.
+        menu.write_bytes(b"VICTORY_MENU_DLSS=dlaa\r\nVICTORY_MENU_FG_TYPE=fsr\r\nVICTORY_MENU_CONSOLE=series-x\r\n"
+                         b"VICTORY_BVH_BUILDER=1\r\n")
         choices = {"console": "series-s", "dlss": "performance", "framegen": "none", "speed": "plain", "rt": "on",
                    "fps": "not-a-cap"}
         with (

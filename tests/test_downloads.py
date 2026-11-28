@@ -17,6 +17,7 @@ from sunset_launcher import downloads
 from sunset_launcher.backend import Library, Runner
 from sunset_launcher.catalog import PROJECTS
 from sunset_launcher.downloads import Archive, Member
+from sunset_launcher.proton import proton_game_path
 
 
 def archive_bytes(files: dict[str, bytes]) -> bytes:
@@ -225,7 +226,7 @@ class LayerFileTests(unittest.TestCase):
             self.assertFalse(self.library.needs_dlss_files(project))
             env = self.library._layer_files(project, replace(project.recipes["linux"], native_d3dcompiler=False),
                                             self.runner, {})
-        self.assertEqual(env["VICTORY_STREAMLINE_DIR"], "Z:" + str(folder).replace("/", "\\"))
+        self.assertEqual(env["VICTORY_STREAMLINE_DIR"], proton_game_path(folder))
         self.assertFalse(self.library.needs_dlss_files(self.project("cool_fox")))
 
     @patch.object(sys, "platform", "linux")
